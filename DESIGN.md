@@ -1,6 +1,9 @@
 # Local IIIF Preservation Tool — Design
 
-> Status: planning. Working name TBD. Single Go binary.
+> Status: discovery + selection half implemented and live-validated against
+> both pilot institutions; preservation half (image fetch → tile → store →
+> serve) not yet built. Working name TBD (binary provisionally
+> `iiifpreserve`). Single Go binary. See §8 for the implementation status.
 
 ## 1. Goal
 
@@ -75,6 +78,19 @@ Approach: per-institution field-mapping rules + value parsers
 typed records. Classify `match` / `uncertain` / `no-match`; never fetch
 `uncertain` until reviewed. Filter runs before any image download.
 
+> **Implementation note — `uncertain` is load-bearing, confirmed on live
+> data.** A bounded live run over the Digital Bodleian top collection
+> produced items that parsed *date* and *origin* cleanly but yielded **no
+> language** under the default field mapping, so they classified
+> `uncertain` (→ review queue) rather than being silently dropped or
+> wrongly fetched — the conservative policy behaving exactly as intended.
+> This makes two things concrete: (1) field mapping is genuinely
+> per-institution and the default mapping is only a starting point —
+> Bodleian language metadata is either absent on some items or under a
+> label outside `{Language, Langue}`, still to be characterised; (2)
+> `uncertain` will be a *common*, not edge, bucket, so the review-queue UX
+> (§7) is on the critical path, not optional polish.
+
 ### 4.3 Polite trawler
 Per-host token-bucket rate limit, global concurrency cap, exponential backoff on
 429/503, conditional GET so re-runs are cheap, content-hash dedup, resumable
@@ -116,4 +132,35 @@ carries the most risk.
 - Confirm Change Discovery API availability for Gallica and Digital Bodleian.
 - Choice of vendored viewer (OpenSeadragon vs. Triiiceratops vs. Mirador).
 - Static vs. selectable tile parameters (levels/tile size) per collection.
-- Review-queue UX (CLI list + approve, or a small served page).
+- Review-queue UX (CLI list + approve, or a small served page). Now on the
+  critical path — see the §4.2 implementation note.
+
+## 8. Implementation status
+
+Built test-first (Red/Green). Default `go test ./...` is fully offline; live
+checks are `-tags=integration` opt-in or the manual binary.
+
+| Component | Status | Where |
+|---|---|---|
+| Date parser (year, ranges, Arabic/Roman centuries, `circa` fuzzy ±20y) | ✅ done | `internal/metadata` |
+| Language → ISO-639 normalizer (8 langs: name/endonym/639-2) | ✅ done | `internal/metadata` |
+| `WorkRecord` builder + per-institution `FieldMapping` | ✅ done | `internal/metadata` |
+| Conservative `match`/`uncertain`/`no-match` filter (lang/date/origin) | ✅ done | `internal/metadata` |
+| IIIF v2 metadata extraction | ✅ done | `internal/metadata` |
+| `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
+| HTTPS `Fetcher` (HTTPS-only, browser UA, status mapping) | ✅ done | `internal/source` |
+| Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff, conditional GET, content-hash dedup, resumable journal | ✅ done | `internal/source` |
+| End-to-end classification pipeline | ✅ done | `internal/pipeline` |
+| CLI entrypoint | ✅ done (provisional name) | `cmd/iiifpreserve` |
+| Live validation vs. Gallica + Bodleian (manifests, recursive walk, full run) | ✅ done | `*_test.go` `//go:build integration` |
+| `changestream` Source adapter (IIIF Change Discovery) | ⬜ not started | DESIGN §4.1 |
+| IIIF **v3** collections (`items`) / mixed `members`; non-string v2 metadata values | ⬜ deferred | — |
+| Free-text-embedded dates | ⬜ deferred (needs false-positive-rate decision) | DESIGN §4.2 |
+| Image fetch → keep max-permitted source → level-0 tiling | ⬜ not started | DESIGN §3, §4.3/§4.4 |
+| `BlobStore` (`local` + `s3-compatible`) + URL rewriting | ⬜ not started | DESIGN §4.4 |
+| Static serving + embedded viewer bundle | ⬜ not started | DESIGN §3, §2 |
+| Review-queue UX | ⬜ not started (now critical path, see §4.2 note) | DESIGN §7 |
+
+The §6 first build slice (collection adapter + normalizer + filter, live-validated,
+test-first on the parsers) is complete. The pipeline currently classifies and
+routes; everything from `[match]` onward in the §3 diagram is unbuilt.
