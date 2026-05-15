@@ -38,6 +38,7 @@ const defaultUserAgent = "Mozilla/5.0 (compatible; go-iiif-preservation/0.1; +ht
 type HTTPFetcher struct {
 	client    *http.Client
 	userAgent string
+	store     ConditionalStore
 }
 
 // Option configures an HTTPFetcher.
@@ -52,6 +53,13 @@ func WithHTTPClient(c *http.Client) Option {
 // WithUserAgent overrides the User-Agent header sent on every request.
 func WithUserAgent(ua string) Option {
 	return func(f *HTTPFetcher) { f.userAgent = ua }
+}
+
+// WithConditionalStore enables conditional GET: validators (ETag/
+// Last-Modified) are stored per URL and replayed so unchanged resources
+// return 304 and reuse the cached body.
+func WithConditionalStore(s ConditionalStore) Option {
+	return func(f *HTTPFetcher) { f.store = s }
 }
 
 // NewHTTPFetcher returns an HTTPFetcher with a browser-like User-Agent and the
@@ -93,6 +101,19 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 	}
 	req.Header.Set("User-Agent", f.userAgent)
 
+	var cached CacheEntry
+	haveCached := false
+	if f.store != nil {
+		if cached, haveCached = f.store.Get(rawURL); haveCached {
+			if cached.ETag != "" {
+				req.Header.Set("If-None-Match", cached.ETag)
+			}
+			if cached.LastModified != "" {
+				req.Header.Set("If-Modified-Since", cached.LastModified)
+			}
+		}
+	}
+
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("source: fetching %s: %w", rawURL, err)
@@ -100,6 +121,11 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 	defer func() { _ = resp.Body.Close() }()
 
 	switch {
+	case resp.StatusCode == http.StatusNotModified:
+		if !haveCached {
+			return nil, fmt.Errorf("source: %s returned 304 with no cached body", rawURL)
+		}
+		return cached.Body, nil
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, rawURL)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
@@ -113,6 +139,12 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("source: reading %s: %w", rawURL, err)
+	}
+
+	if f.store != nil {
+		if etag, lm := resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"); etag != "" || lm != "" {
+			f.store.Put(rawURL, CacheEntry{ETag: etag, LastModified: lm, Body: body})
+		}
 	}
 	return body, nil
 }
