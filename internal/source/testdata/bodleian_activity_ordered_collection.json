@@ -1,0 +1,1 @@
+{"@context":"http://iiif.io/api/discovery/1/context.json","id":"https://iiif.bodleian.ox.ac.uk/iiif/activity/all-changes","type":"OrderedCollection","totalItems":21731,"first":{"id":"https://iiif.bodleian.ox.ac.uk/iiif/activity/page-0","type":"OrderedCollectionPage"},"last":{"id":"https://iiif.bodleian.ox.ac.uk/iiif/activity/page-217","type":"OrderedCollectionPage"}}

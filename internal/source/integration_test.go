@@ -91,3 +91,40 @@ func TestIntegration_LiveCollectionWalkBounded(t *testing.T) {
 	}
 	t.Logf("OK: first manifest %s after %d live requests", first, counter.calls.Load())
 }
+
+// Proves the live IIIF Change Discovery seam: walks the real Digital Bodleian
+// ActivityStream, early-stopping after a few manifests. Bounded — only the
+// OrderedCollection + first page are fetched (asserted), every request polite.
+func TestIntegration_LiveChangeStreamBounded(t *testing.T) {
+	const root = "https://iiif.bodleian.ox.ac.uk/iiif/activity/all-changes"
+
+	counter := &countingFetcher{inner: NewHTTPFetcher()}
+	src := NewChangeStreamSource(NewPoliteFetcher(counter), root)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var got []string
+	for u, err := range src.Manifests(ctx) {
+		if err != nil {
+			t.Fatalf("live change stream errored: %v", err)
+		}
+		got = append(got, u)
+		if len(got) == 5 {
+			break // early-stop within the first page
+		}
+	}
+
+	if len(got) != 5 {
+		t.Fatalf("got %d manifest URLs, want 5", len(got))
+	}
+	for _, u := range got {
+		if !strings.HasPrefix(u, "https://iiif.bodleian.ox.ac.uk/iiif/manifest/") {
+			t.Fatalf("unexpected manifest URL: %q", u)
+		}
+	}
+	if n := counter.calls.Load(); n > 3 {
+		t.Fatalf("made %d live requests for the first 5 manifests; expected ~2 (collection + page-0)", n)
+	}
+	t.Logf("OK: live change stream, first 5 manifests after %d requests", counter.calls.Load())
+}
