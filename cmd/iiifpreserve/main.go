@@ -23,6 +23,7 @@ import (
 
 type options struct {
 	collection string
+	manifest   string // -manifest: preserve one manifest URL, no crawl/filter
 	langs      []string
 	from, to   int
 	hasDate    bool
@@ -65,7 +66,8 @@ func splitCSV(s string) []string {
 func parseArgs(args []string) (*options, error) {
 	fs := flag.NewFlagSet("iiifpreserve", flag.ContinueOnError)
 	var (
-		collection = fs.String("collection", "", "IIIF Collection root URL (required)")
+		collection = fs.String("collection", "", "IIIF Collection root URL to crawl")
+		manifest   = fs.String("manifest", "", "preserve a single manifest URL (no crawl; skips the filter)")
 		lang       = fs.String("lang", "", "comma-separated ISO 639-1 language codes")
 		from       = fs.Int("from", 0, "earliest year (inclusive)")
 		to         = fs.Int("to", 0, "latest year (inclusive)")
@@ -84,11 +86,15 @@ func parseArgs(args []string) (*options, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	if *serve == "" && *collection == "" {
-		return nil, errors.New("-collection is required (or -serve to serve the store)")
+	if *collection != "" && *manifest != "" {
+		return nil, errors.New("-collection and -manifest are mutually exclusive")
+	}
+	if *serve == "" && *collection == "" && *manifest == "" {
+		return nil, errors.New("one of -collection, -manifest, or -serve is required")
 	}
 	o := &options{
 		collection: *collection,
+		manifest:   *manifest,
 		langs:      splitCSV(*lang),
 		from:       *from,
 		to:         *to,
@@ -194,6 +200,10 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		return runServe(ctx, o, out, errOut)
 	}
 
+	if o.manifest != "" {
+		return runManifest(ctx, o, out, errOut)
+	}
+
 	// One polite fetcher shared across discovery, manifest, and image
 	// fetches so a single per-host rate limiter governs all traffic.
 	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
@@ -268,6 +278,45 @@ func serveBanner(scheme, addr, dir string) string {
 		"iiifpreserve: serving %s at %s (Ctrl-C to stop)\n"+
 			"iiifpreserve: open %s/ in a browser for the embedded Mirador viewer\n",
 		dir, base, base)
+}
+
+// runManifest preserves a single explicitly-named manifest. No crawl, no
+// filter — naming a manifest is an intentional choice. Uses the same polite
+// HTTPS fetcher as the crawler (no curl). -dry-run fetches and reports
+// without storing.
+func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
+	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
+
+	body, err := fetcher.Fetch(ctx, o.manifest)
+	if err != nil {
+		errOut.line("iiifpreserve: fetching manifest:", err)
+		return 1
+	}
+
+	if o.dryRun {
+		images, err := preserve.EnumerateImages(body)
+		if err != nil {
+			errOut.line("iiifpreserve: enumerating images:", err)
+			return 1
+		}
+		out.printf("iiifpreserve: %s — %d image(s) (dry-run, not stored)\n", o.manifest, len(images))
+		if out.err != nil {
+			return 1
+		}
+		return 0
+	}
+
+	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body)
+	if err != nil {
+		errOut.line("iiifpreserve: preserve:", err)
+		return 1
+	}
+	out.printf("iiifpreserve: preserved %d image(s) to %s/%s (skipped %d, %d failed)\n",
+		sum.Stored, o.store, sum.Dir, sum.Skipped, len(sum.Failures))
+	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
 }
 
 // runServe serves the preserved bundle dir over HTTPS until interrupted.

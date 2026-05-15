@@ -127,6 +127,26 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("manifest flag is parsed", func(t *testing.T) {
+		o, err := parseArgs([]string{"-manifest", "https://iiif.io/m-01.json"})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.manifest != "https://iiif.io/m-01.json" {
+			t.Fatalf("manifest = %q", o.manifest)
+		}
+	})
+
+	t.Run("collection and manifest are mutually exclusive", func(t *testing.T) {
+		_, err := parseArgs([]string{
+			"-collection", "https://example.org/c/top",
+			"-manifest", "https://example.org/m.json",
+		})
+		if err == nil {
+			t.Fatal("expected error when both -collection and -manifest are given")
+		}
+	})
+
 	t.Run("store and dry-run flags", func(t *testing.T) {
 		o, err := parseArgs([]string{
 			"-collection", "https://example.org/c/top",

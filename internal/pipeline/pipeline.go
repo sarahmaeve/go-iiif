@@ -151,7 +151,7 @@ func (p *Pipeline) process(ctx context.Context, url string) Result {
 	if err != nil {
 		return Result{ManifestURL: url, Err: fmt.Errorf("pipeline: fetching %s: %w", url, err)}
 	}
-	entries, err := metadata.ExtractV2Metadata(body)
+	entries, err := metadata.ExtractMetadata(body)
 	if err != nil {
 		return Result{ManifestURL: url, Err: fmt.Errorf("pipeline: %s: %w", url, err)}
 	}
