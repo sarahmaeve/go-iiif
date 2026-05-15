@@ -193,8 +193,12 @@ carries the most risk.
   Cookbook** (v3), and **Gallica/BnF** (single-image estampe
   `btv1b9055204k`: ~39s honouring the 13s/host throttle → tiled, served,
   manifest re-pointed, info.json localized; deep zoom confirmed in-browser).
-  Whole multi-page Gallica manuscripts are now *obtainable* (inherently
-  long under the 13s throttle, but resumable + observable — see below).
+  **Whole multi-page Gallica manuscript validated end-to-end**: a 25-page
+  manuscript (`btv1b53140000q`) preserved under the 13s throttle (25/25,
+  0 failed, per-page progress) → 25 local tile pyramids → served with all
+  25 images re-pointed to local level0, all thumbnails dropped, per-page
+  info.json localized, deep tiles served; re-run resumed in 0.56s (25
+  skipped, no HTTP).
 - **Thumbnails:** a manifest/canvas `thumbnail` pointing at a *different*
   service than the preserved image (e.g. Gallica's `…ark.thumbnail`)
   cannot be matched by provenance. `rewriteManifest` now **drops any
@@ -253,7 +257,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
-| Live dogfood: `-manifest` Cookbook v3 + real Bodleian + **Gallica/BnF estampe** → tiled preserve → serve → localized + re-pointed + deep tile (Gallica honoured the 13s throttle) | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
+| Live dogfood: `-manifest` Cookbook v3 + real Bodleian + Gallica/BnF estampe + **25-page Gallica manuscript** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified (re-run 0.56s, all skipped) | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
 | Re-tile bundles preserved before tiling existed | ⬜ deferred (idempotent skip only checks flat jpg) | DESIGN §7 |
 The binary runs the full `acquire → select → preserve → serve → view →
 deep-zoom` path live (one binary, real institution or single `-manifest`:
