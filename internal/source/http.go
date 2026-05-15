@@ -7,11 +7,28 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 )
 
 // ErrInsecureURL is returned when a URL is not https. The crawler refuses
 // plaintext rather than silently upgrading, so misconfiguration is explicit.
 var ErrInsecureURL = errors.New("source: non-https URL refused")
+
+// HTTPStatusError is returned for a non-2xx response (other than 404, which
+// maps to ErrNotFound). It carries the status code so the polite layer can
+// decide whether the failure is retryable, and any server-provided
+// Retry-After delay.
+type HTTPStatusError struct {
+	Code       int
+	URL        string
+	RetryAfter time.Duration
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("source: fetching %s: unexpected status %d %s",
+		e.URL, e.Code, http.StatusText(e.Code))
+}
 
 // defaultUserAgent is browser-like on purpose: some institutions (e.g.
 // Gallica/BnF) reject the default Go HTTP client User-Agent with 403.
@@ -47,6 +64,19 @@ func NewHTTPFetcher(opts ...Option) *HTTPFetcher {
 	return f
 }
 
+// parseRetryAfter parses the delta-seconds form of the Retry-After header.
+// The HTTP-date form is ignored (returns 0) — callers fall back to their own
+// backoff schedule.
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
+}
+
 // Fetch retrieves url, sending the configured User-Agent.
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
@@ -73,8 +103,11 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, rawURL)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return nil, fmt.Errorf("source: fetching %s: unexpected status %d %s",
-			rawURL, resp.StatusCode, http.StatusText(resp.StatusCode))
+		return nil, &HTTPStatusError{
+			Code:       resp.StatusCode,
+			URL:        rawURL,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 
 	body, err := io.ReadAll(resp.Body)

@@ -2,9 +2,11 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -33,7 +35,15 @@ type PoliteFetcher struct {
 	limiters map[string]RateLimiter
 
 	sem chan struct{} // global concurrency cap; nil = unbounded
+
+	maxAttempts int
+	baseDelay   time.Duration
+	sleep       func(ctx context.Context, d time.Duration) error
 }
+
+// retryableStatuses are the transient HTTP statuses worth retrying with
+// backoff (DESIGN §4.3).
+var retryableStatuses = map[int]bool{429: true, 503: true}
 
 // PoliteOption configures a PoliteFetcher.
 type PoliteOption func(*PoliteFetcher)
@@ -54,11 +64,33 @@ func WithMaxConcurrent(n int) PoliteOption {
 	}
 }
 
+// WithRetry sets the maximum number of attempts (>=1) and the base backoff
+// delay. Backoff is exponential: base, 2*base, 4*base, ...
+func WithRetry(maxAttempts int, baseDelay time.Duration) PoliteOption {
+	return func(p *PoliteFetcher) {
+		if maxAttempts >= 1 {
+			p.maxAttempts = maxAttempts
+		}
+		if baseDelay > 0 {
+			p.baseDelay = baseDelay
+		}
+	}
+}
+
+// WithSleeper overrides the backoff sleep (tests inject a non-blocking,
+// recording sleeper).
+func WithSleeper(fn func(ctx context.Context, d time.Duration) error) PoliteOption {
+	return func(p *PoliteFetcher) { p.sleep = fn }
+}
+
 // NewPoliteFetcher wraps inner with per-host rate limiting.
 func NewPoliteFetcher(inner Fetcher, opts ...PoliteOption) *PoliteFetcher {
 	p := &PoliteFetcher{
-		inner:    inner,
-		limiters: make(map[string]RateLimiter),
+		inner:       inner,
+		limiters:    make(map[string]RateLimiter),
+		maxAttempts: 1,
+		baseDelay:   time.Second,
+		sleep:       sleepCtx,
 		newLimiter: func(string) RateLimiter {
 			return rate.NewLimiter(rate.Limit(defaultPerHostRPS), defaultPerHostBurst)
 		},
@@ -81,17 +113,16 @@ func (p *PoliteFetcher) limiterFor(host string) RateLimiter {
 	return l
 }
 
-// Fetch waits for the per-host rate limiter, then delegates to the inner
-// Fetcher.
+// Fetch applies the per-host rate limit and global concurrency cap, then
+// delegates to the inner Fetcher, retrying transient 429/503 responses with
+// exponential backoff (honoring Retry-After when the server provides it).
 func (p *PoliteFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("source: parsing %q: %w", rawURL, err)
 	}
-	if err := p.limiterFor(u.Host).Wait(ctx); err != nil {
-		return nil, fmt.Errorf("source: rate limiter wait for %s: %w", u.Host, err)
-	}
 
+	// One concurrency slot for the whole operation, including backoff waits.
 	if p.sem != nil {
 		select {
 		case p.sem <- struct{}{}:
@@ -101,5 +132,54 @@ func (p *PoliteFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error
 		}
 	}
 
-	return p.inner.Fetch(ctx, rawURL)
+	limiter := p.limiterFor(u.Host)
+	var lastErr error
+	for attempt := 1; attempt <= p.maxAttempts; attempt++ {
+		if err := limiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("source: rate limiter wait for %s: %w", u.Host, err)
+		}
+
+		body, err := p.inner.Fetch(ctx, rawURL)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+
+		retryAfter, ok := retryableDelay(err)
+		if !ok || attempt == p.maxAttempts {
+			return nil, err
+		}
+
+		delay := retryAfter
+		if delay <= 0 {
+			delay = p.baseDelay << (attempt - 1) // base, 2*base, 4*base, ...
+		}
+		if err := p.sleep(ctx, delay); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// retryableDelay reports whether err is a transient HTTP status worth
+// retrying, and any server-provided Retry-After delay.
+func retryableDelay(err error) (time.Duration, bool) {
+	var se *HTTPStatusError
+	if errors.As(err, &se) && retryableStatuses[se.Code] {
+		return se.RetryAfter, true
+	}
+	return 0, false
+}
+
+// sleepCtx is the default backoff sleeper: it waits d or returns early if ctx
+// is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
