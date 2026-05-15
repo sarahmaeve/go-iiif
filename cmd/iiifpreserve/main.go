@@ -17,6 +17,7 @@ import (
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
 	"github.com/sarahmaeve/go-iiif/internal/preserve"
+	"github.com/sarahmaeve/go-iiif/internal/serve"
 	"github.com/sarahmaeve/go-iiif/internal/source"
 )
 
@@ -30,6 +31,10 @@ type options struct {
 	workers    int
 	journal    string
 	preserve   string // output dir; empty = classify only (no download)
+	serve      string // addr; non-empty = serve the preserve dir, don't crawl
+	tlsCert    string
+	tlsKey     string
+	noTLS      bool
 }
 
 // filter builds the researcher's selection predicate from the parsed flags.
@@ -67,12 +72,19 @@ func parseArgs(args []string) (*options, error) {
 		workers    = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
 		journal    = fs.String("journal", "", "path to a resumable crawl journal (optional)")
 		preserve   = fs.String("preserve", "", "output dir: download matched manifests' images here (default: classify only)")
+		serve      = fs.String("serve", "", "serve the -preserve dir over HTTPS at this addr (e.g. 127.0.0.1:8443) instead of crawling")
+		tlsCert    = fs.String("tls-cert", "", "TLS certificate PEM (e.g. from `mkcert 127.0.0.1`)")
+		tlsKey     = fs.String("tls-key", "", "TLS private key PEM")
+		noTLS      = fs.Bool("no-tls", false, "serve plain HTTP instead of HTTPS (debugging only)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	if *collection == "" {
-		return nil, errors.New("-collection is required")
+	if *serve == "" && *collection == "" {
+		return nil, errors.New("-collection is required (or -serve to serve a preserved dir)")
+	}
+	if *serve != "" && *preserve == "" {
+		return nil, errors.New("-serve requires -preserve <dir> to serve")
 	}
 	o := &options{
 		collection: *collection,
@@ -85,6 +97,10 @@ func parseArgs(args []string) (*options, error) {
 		workers:    *workers,
 		journal:    *journal,
 		preserve:   *preserve,
+		serve:      *serve,
+		tlsCert:    *tlsCert,
+		tlsKey:     *tlsKey,
+		noTLS:      *noTLS,
 	}
 	return o, nil
 }
@@ -153,6 +169,10 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	if o.serve != "" {
+		return runServe(ctx, o, out, errOut)
+	}
+
 	// One polite fetcher shared across discovery, manifest, and image
 	// fetches so a single per-host rate limiter governs all traffic.
 	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
@@ -213,6 +233,41 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	errOut.printf("iiifpreserve: %d manifests, %d match, %d images preserved\n", n, matched, preserved)
 
 	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
+}
+
+// runServe serves the preserved bundle dir over HTTPS until interrupted.
+func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
+	certFile, keyFile := o.tlsCert, o.tlsKey
+	if o.noTLS {
+		certFile, keyFile = "", ""
+		errOut.line("iiifpreserve: WARNING -no-tls serves plain HTTP (debugging only)")
+	} else {
+		if certFile == "" || keyFile == "" {
+			errOut.line("iiifpreserve: -serve needs -tls-cert and -tls-key " +
+				"(generate with `mkcert 127.0.0.1 localhost`), or pass -no-tls for plain HTTP")
+			return 2
+		}
+		for _, f := range []string{certFile, keyFile} {
+			// G703: f is an operator-supplied -tls-cert/-tls-key CLI flag,
+			// not attacker-controlled input.
+			if _, err := os.Stat(f); err != nil { //nolint:gosec // G703: operator-supplied TLS path
+				errOut.line("iiifpreserve: TLS file not found:", f)
+				return 1
+			}
+		}
+	}
+
+	scheme := "https"
+	if o.noTLS {
+		scheme = "http"
+	}
+	out.printf("iiifpreserve: serving %s at %s://%s (Ctrl-C to stop)\n", o.preserve, scheme, o.serve)
+
+	if err := serve.New(o.preserve).ListenAndServe(ctx, o.serve, certFile, keyFile); err != nil {
+		errOut.line("iiifpreserve: serve:", err)
 		return 1
 	}
 	return 0

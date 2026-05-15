@@ -23,6 +23,8 @@ func TestParseArgs(t *testing.T) {
 			"-max", "7",
 			"-workers", "8",
 			"-preserve", "/tmp/out",
+			"-serve", "127.0.0.1:8443",
+			"-tls-cert", "/c.pem", "-tls-key", "/k.pem",
 		})
 		if err != nil {
 			t.Fatalf("parseArgs: %v", err)
@@ -38,6 +40,9 @@ func TestParseArgs(t *testing.T) {
 		}
 		if o.preserve != "/tmp/out" {
 			t.Fatalf("preserve = %q, want /tmp/out", o.preserve)
+		}
+		if o.serve != "127.0.0.1:8443" || o.tlsCert != "/c.pem" || o.tlsKey != "/k.pem" {
+			t.Fatalf("serve flags = %q %q %q", o.serve, o.tlsCert, o.tlsKey)
 		}
 		f := o.filter()
 		wantLangs := []string{"fr", "la"}
