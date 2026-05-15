@@ -4,10 +4,84 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// writeNestedBundle lays down a <root>/<host>/<slug>/ institution-nested
+// bundle (the layout preserve.dirFor now produces).
+func writeNestedBundle(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, p := range []struct{ host, slug string }{
+		{"iiif.bodleian.ox.ac.uk", "iiif_manifest_a.json"},
+		{"gallica.bnf.fr", "iiif_ark_b_manifest.json"},
+	} {
+		dir := filepath.Join(root, p.host, p.slug)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		manifest := `{"@type":"sc:Manifest","sequences":[{"canvases":[{"images":[{"resource":{"@id":"https://` +
+			p.host + `/img/x/full/full/0/default.jpg","service":{"@id":"https://` + p.host + `/img/x"}}}]}]}]}`
+		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		prov := `{"manifest_url":"https://` + p.host + `/m","images":[{"file":"0001.jpg",` +
+			`"service_id":"https://` + p.host + `/img/x","source_url":"https://` + p.host + `/img/x/full/full/0/default.jpg"}]}`
+		if err := os.WriteFile(filepath.Join(dir, "provenance.json"), []byte(prov), 0o600); err != nil {
+			t.Fatalf("write provenance: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "0001.jpg"), []byte("\xff\xd8JPEG"), 0o600); err != nil {
+			t.Fatalf("write jpg: %v", err)
+		}
+	}
+	return root
+}
+
+// TestServer_NestedInstitutionLayout: with <host>/<slug>/ nesting the index
+// must list each manifest by its full path, the viewer must serve at that
+// nested path, and the manifest must still be localized (rewrite regression).
+func TestServer_NestedInstitutionLayout(t *testing.T) {
+	ts := httptest.NewServer(New(writeNestedBundle(t)).Handler())
+	defer ts.Close()
+
+	const a = "iiif.bodleian.ox.ac.uk/iiif_manifest_a.json"
+
+	code, body, _ := viewerGet(t, ts, "/")
+	if code != 200 {
+		t.Fatalf("GET / = %d", code)
+	}
+	for _, want := range []string{
+		`href="/iiif.bodleian.ox.ac.uk/iiif_manifest_a.json/"`,
+		`href="/gallica.bnf.fr/iiif_ark_b_manifest.json/"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("index missing nested viewer link %q; body=%s", want, body)
+		}
+	}
+
+	code, body, ct := viewerGet(t, ts, "/"+a+"/")
+	if code != 200 || !strings.Contains(ct, "text/html") {
+		t.Fatalf("viewer page at nested path = %d ct=%q", code, ct)
+	}
+	if !strings.Contains(body, "/"+a+"/manifest.json") || !strings.Contains(body, "Mirador.viewer") {
+		t.Fatalf("nested viewer page not wired to its manifest; body=%s", body)
+	}
+
+	// Rewrite must still localize the nested manifest's image.
+	code, body, _ = viewerGet(t, ts, "/"+a+"/manifest.json")
+	if code != 200 {
+		t.Fatalf("GET nested manifest = %d", code)
+	}
+	if !strings.Contains(body, "/"+a+"/0001.jpg") {
+		t.Fatalf("nested manifest not localized; body=%s", body)
+	}
+	if strings.Contains(body, `"service"`) {
+		t.Fatalf("nested manifest still has Image API service; body=%s", body)
+	}
+}
 
 // viewerGet is a tiny GET helper returning status, body, and content-type.
 func viewerGet(t *testing.T, ts *httptest.Server, path string) (int, string, string) {

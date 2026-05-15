@@ -20,6 +20,32 @@ func (j jpegEverything) Fetch(_ context.Context, url string) ([]byte, error) {
 	return []byte("\xff\xd8\xff\xe0FAKEJPEG"), nil
 }
 
+func TestDirFor_NestsByInstitution(t *testing.T) {
+	cases := []struct {
+		url, want string
+	}{
+		{
+			"https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c.json",
+			"iiif.bodleian.ox.ac.uk/iiif_manifest_f317ad0c.json",
+		},
+		{
+			"https://gallica.bnf.fr/iiif/ark:/12148/btv1b8451636g/manifest.json",
+			"gallica.bnf.fr/iiif_ark_12148_btv1b8451636g_manifest.json",
+		},
+	}
+	for _, c := range cases {
+		got := dirFor(c.url)
+		if got != c.want {
+			t.Errorf("dirFor(%q) = %q, want %q", c.url, got, c.want)
+		}
+		// Host must be its own leading path segment (institution nesting).
+		host, _, ok := strings.Cut(got, "/")
+		if !ok || strings.Contains(host, "_iiif") {
+			t.Errorf("dirFor(%q) = %q: host is not an isolated first segment", c.url, got)
+		}
+	}
+}
+
 func TestPreserve_StoresImagesManifestAndProvenance(t *testing.T) {
 	manifestBytes := readManifest(t, "bodleian_f317ad0c.json") // single-canvas v2
 	const manifestURL = "https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c.json"

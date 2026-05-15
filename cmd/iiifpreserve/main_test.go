@@ -1,11 +1,67 @@
 package main
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
 )
+
+func TestParseConfig(t *testing.T) {
+	in := strings.NewReader(`
+# the persistent image library
+store = /data/iiif
+
+  # blank lines and comments ignored above and below
+
+empty=
+`)
+	cfg, err := parseConfig(in)
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if got := cfg["store"]; got != "/data/iiif" {
+		t.Errorf("store = %q, want /data/iiif (value trimmed)", got)
+	}
+	if _, ok := cfg["# the persistent image library"]; ok {
+		t.Error("comment line was parsed as a key")
+	}
+	if got, ok := cfg["empty"]; !ok || got != "" {
+		t.Errorf("empty key = %q,%v; want \"\",true", got, ok)
+	}
+}
+
+func TestResolveStore(t *testing.T) {
+	home := t.TempDir()
+	def := filepath.Join(home, "iiif-images")
+
+	t.Run("flag wins over config and default", func(t *testing.T) {
+		got := resolveStore("/flag/path", map[string]string{"store": "/cfg/path"}, home)
+		if got != "/flag/path" {
+			t.Errorf("got %q, want /flag/path", got)
+		}
+	})
+	t.Run("config used when no flag", func(t *testing.T) {
+		got := resolveStore("", map[string]string{"store": "/cfg/path"}, home)
+		if got != "/cfg/path" {
+			t.Errorf("got %q, want /cfg/path", got)
+		}
+	})
+	t.Run("default when neither", func(t *testing.T) {
+		got := resolveStore("", nil, home)
+		if got != def {
+			t.Errorf("got %q, want %q", got, def)
+		}
+	})
+	t.Run("tilde in config expands to home", func(t *testing.T) {
+		got := resolveStore("", map[string]string{"store": "~/lib"}, home)
+		if got != filepath.Join(home, "lib") {
+			t.Errorf("got %q, want %q", got, filepath.Join(home, "lib"))
+		}
+	})
+}
 
 func TestServeBanner(t *testing.T) {
 	b := serveBanner("https", "127.0.0.1:8443", "/tmp/preserved")
@@ -68,6 +124,32 @@ func TestParseArgs(t *testing.T) {
 		}
 		if len(f.Places) != 2 || f.Places[0] != "Venice" {
 			t.Fatalf("Places = %v", f.Places)
+		}
+	})
+
+	t.Run("store and dry-run flags", func(t *testing.T) {
+		o, err := parseArgs([]string{
+			"-collection", "https://example.org/c/top",
+			"-store", "/data/iiif", "-dry-run",
+		})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.store != "/data/iiif" {
+			t.Fatalf("store = %q, want /data/iiif", o.store)
+		}
+		if !o.dryRun {
+			t.Fatal("dryRun = false, want true")
+		}
+	})
+
+	t.Run("serve no longer requires preserve (store has a default)", func(t *testing.T) {
+		o, err := parseArgs([]string{"-serve", "127.0.0.1:8443"})
+		if err != nil {
+			t.Fatalf("serve without -preserve should be allowed now: %v", err)
+		}
+		if o.serve != "127.0.0.1:8443" {
+			t.Fatalf("serve = %q", o.serve)
 		}
 	})
 

@@ -30,8 +30,10 @@ type options struct {
 	max        int
 	workers    int
 	journal    string
-	preserve   string // output dir; empty = classify only (no download)
-	serve      string // addr; non-empty = serve the preserve dir, don't crawl
+	store      string // -store: persistent library root (resolved in run())
+	preserve   string // deprecated alias for -store (back-compat)
+	dryRun     bool   // classify only, do not download images
+	serve      string // addr; non-empty = serve the store, don't crawl
 	tlsCert    string
 	tlsKey     string
 	noTLS      bool
@@ -71,8 +73,10 @@ func parseArgs(args []string) (*options, error) {
 		max        = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
 		workers    = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
 		journal    = fs.String("journal", "", "path to a resumable crawl journal (optional)")
-		preserve   = fs.String("preserve", "", "output dir: download matched manifests' images here (default: classify only)")
-		serve      = fs.String("serve", "", "serve the -preserve dir over HTTPS at this addr (e.g. 127.0.0.1:8443) instead of crawling")
+		store      = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
+		preserve   = fs.String("preserve", "", "deprecated alias for -store")
+		dryRun     = fs.Bool("dry-run", false, "classify only; do not download images")
+		serve      = fs.String("serve", "", "serve the store over HTTPS at this addr (e.g. 127.0.0.1:8443) instead of crawling")
 		tlsCert    = fs.String("tls-cert", "", "TLS certificate PEM (e.g. from `mkcert 127.0.0.1`)")
 		tlsKey     = fs.String("tls-key", "", "TLS private key PEM")
 		noTLS      = fs.Bool("no-tls", false, "serve plain HTTP instead of HTTPS (debugging only)")
@@ -81,10 +85,7 @@ func parseArgs(args []string) (*options, error) {
 		return nil, err
 	}
 	if *serve == "" && *collection == "" {
-		return nil, errors.New("-collection is required (or -serve to serve a preserved dir)")
-	}
-	if *serve != "" && *preserve == "" {
-		return nil, errors.New("-serve requires -preserve <dir> to serve")
+		return nil, errors.New("-collection is required (or -serve to serve the store)")
 	}
 	o := &options{
 		collection: *collection,
@@ -96,7 +97,9 @@ func parseArgs(args []string) (*options, error) {
 		max:        *max,
 		workers:    *workers,
 		journal:    *journal,
+		store:      *store,
 		preserve:   *preserve,
+		dryRun:     *dryRun,
 		serve:      *serve,
 		tlsCert:    *tlsCert,
 		tlsKey:     *tlsKey,
@@ -166,6 +169,24 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		return 2
 	}
 
+	// Resolve the persistent library root: -store flag > config `store=` >
+	// ~/iiif-images. -preserve is a deprecated alias for -store.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		errOut.line("iiifpreserve: cannot determine home dir:", err)
+		return 1
+	}
+	cfg, err := loadConfig(home)
+	if err != nil {
+		errOut.line("iiifpreserve:", err)
+		return 1
+	}
+	storeFlag := o.store
+	if storeFlag == "" {
+		storeFlag = o.preserve // deprecated alias
+	}
+	o.store = resolveStore(storeFlag, cfg, home)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -201,8 +222,8 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	})
 
 	var store preserve.BlobStore
-	if o.preserve != "" {
-		store = preserve.NewLocalBlobStore(o.preserve)
+	if !o.dryRun {
+		store = preserve.NewLocalBlobStore(o.store)
 	}
 
 	var n, matched, preserved int
@@ -275,9 +296,9 @@ func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	if o.noTLS {
 		scheme = "http"
 	}
-	out.printf("%s", serveBanner(scheme, o.serve, o.preserve))
+	out.printf("%s", serveBanner(scheme, o.serve, o.store))
 
-	if err := serve.New(o.preserve).ListenAndServe(ctx, o.serve, certFile, keyFile); err != nil {
+	if err := serve.New(o.store).ListenAndServe(ctx, o.serve, certFile, keyFile); err != nil {
 		errOut.line("iiifpreserve: serve:", err)
 		return 1
 	}

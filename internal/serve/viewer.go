@@ -5,9 +5,9 @@ import (
 	"html/template"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // miradorBundle is the vendored prebuilt Mirador 4 UMD bundle, embedded so
@@ -48,35 +48,35 @@ var viewerTmpl = template.Must(template.New("viewer").Parse(`<!doctype html>
 <title>{{.}} — Mirador</title>
 <style>html,body,#mirador{margin:0;height:100%}</style>
 <body>
-<div id="mirador"></div>
+<div id="mirador" data-manifest="/{{.}}/manifest.json"></div>
 <script src="` + miradorRoute + `"></script>
 <script>
   Mirador.viewer({
     id: 'mirador',
     window: { allowFullscreen: true },
-    windows: [{ manifestId: '/{{.}}/manifest.json' }]
+    windows: [{ manifestId: document.getElementById('mirador').dataset.manifest }]
   });
 </script>
 </body>
 </html>
 `))
 
-// preservedDirs returns the sorted slugs of top-level dirs that hold a
-// manifest.json — the preserved manifests this server can view.
+// preservedDirs returns the sorted root-relative slash paths of every dir
+// holding a manifest.json, at any depth — the preserved manifests this
+// server can view. With institution nesting these look like
+// "<host>/<slug>".
 func (s *Server) preservedDirs() []string {
-	entries, err := os.ReadDir(s.root)
-	if err != nil {
-		return nil
-	}
 	var dirs []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	_ = filepath.WalkDir(s.root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "manifest.json" {
+			return nil //nolint:nilerr // skip unreadable entries; a partial index still serves
 		}
-		if _, err := os.Stat(filepath.Join(s.root, e.Name(), "manifest.json")); err == nil {
-			dirs = append(dirs, e.Name())
+		rel, rerr := filepath.Rel(s.root, filepath.Dir(p))
+		if rerr == nil && rel != "." {
+			dirs = append(dirs, filepath.ToSlash(rel))
 		}
-	}
+		return nil
+	})
 	sort.Strings(dirs)
 	return dirs
 }
@@ -99,14 +99,16 @@ func (s *Server) serveBundle(w http.ResponseWriter) {
 	_, _ = w.Write(miradorBundle) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
-// hasManifest reports whether clean is a "/<dir>/" request for a preserved
-// manifest dir, so the viewer page is served instead of a file listing.
+// hasManifest reports whether clean (already path.Clean'd, no trailing
+// slash) is a request for a preserved manifest dir at any depth — e.g.
+// "/<host>/<slug>" — so the viewer page is served instead of a file
+// listing. path.Clean has already removed any "..".
 func (s *Server) hasManifest(clean string) (dir string, ok bool) {
-	dir = path.Base(clean)
-	if dir == "." || dir == "/" {
+	dir = strings.TrimPrefix(clean, "/")
+	if dir == "" || dir == "." {
 		return "", false
 	}
-	if _, err := os.Stat(filepath.Join(s.root, dir, "manifest.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(dir), "manifest.json")); err != nil {
 		return "", false
 	}
 	return dir, true

@@ -35,14 +35,25 @@ type provenanceImg struct {
 var unsafeKeyChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 // dirFor derives a stable, filesystem-safe BlobStore prefix from a manifest
-// URL.
+// URL, nested by institution: "<host>/<slugified-path>". The host is its own
+// path segment so a permanent library groups manifests under their source
+// institution.
 func dirFor(manifestURL string) string {
 	s := manifestURL
 	if i := strings.Index(s, "://"); i >= 0 {
 		s = s[i+3:]
 	}
-	s = unsafeKeyChars.ReplaceAllString(s, "_")
-	return strings.Trim(s, "_")
+	host, rest, _ := strings.Cut(s, "/")
+	host = strings.Trim(unsafeKeyChars.ReplaceAllString(host, "_"), "_")
+	slug := strings.Trim(unsafeKeyChars.ReplaceAllString(rest, "_"), "_")
+	switch {
+	case host == "":
+		return slug
+	case slug == "":
+		return host
+	default:
+		return host + "/" + slug
+	}
 }
 
 // Preserve fetches every canvas image of a matched manifest at the largest
