@@ -1,0 +1,11 @@
+{
+  "manifest_url": "https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c-a35b-4e9f-8426-c71f215d382d.json",
+  "license": "<span>Photo: © Bodleian Libraries, University of Oxford. Terms of use: <a href=\"https://creativecommons.org/licenses/by-nc/4.0/\">CC BY-NC 4.0</a>.</span>",
+  "images": [
+    {
+      "file": "0001.jpg",
+      "service_id": "https://iiif.bodleian.ox.ac.uk/iiif/image/c85d87de-abd9-43b1-abf4-c65a814dc0a8",
+      "source_url": "https://iiif.bodleian.ox.ac.uk/iiif/image/c85d87de-abd9-43b1-abf4-c65a814dc0a8/full/max/0/default.jpg"
+    }
+  ]
+}

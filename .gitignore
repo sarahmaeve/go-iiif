@@ -24,6 +24,17 @@ profile.cov
 go.work
 go.work.sum
 
+# Preserved/fetched images are never committed or stored in this repo —
+# they belong in the researcher's BlobStore dir, and tests fetch to t.TempDir.
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.jp2
+*.gif
+*.webp
+
 # env file
 .env
 

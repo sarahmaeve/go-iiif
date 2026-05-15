@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,9 +63,21 @@ func TestIntegration_PreserveThenServe(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	got, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || string(got) != string(manifestBytes) {
-		t.Fatalf("served manifest mismatch: status %d, %d bytes (preserved %d)",
-			resp.StatusCode, len(got), len(manifestBytes))
+	if resp.StatusCode != 200 {
+		t.Fatalf("serve GET status %d", resp.StatusCode)
 	}
-	t.Logf("OK: preserved + served %s back over loopback (%d bytes)", sum.Dir, len(got))
+	// The served manifest must point at THIS server's local image, with no
+	// trace of the live institution — the whole point of preservation.
+	localImg := "http://" + ln.Addr().String() + "/" + sum.Dir + "/0001.jpg"
+	if !strings.Contains(string(got), localImg) {
+		t.Fatalf("served manifest does not reference local image %q", localImg)
+	}
+	// The preserved page image's service must be gone (delocalized). The
+	// manifest logo points at a different, un-preserved image service and
+	// legitimately stays remote — we only localize preserved content.
+	const preservedService = "iiif.bodleian.ox.ac.uk/iiif/image/c85d87de-abd9-43b1-abf4-c65a814dc0a8"
+	if strings.Contains(string(got), preservedService) {
+		t.Fatalf("served manifest still references the preserved image's live service")
+	}
+	t.Logf("OK: preserved, served, and rewritten %s to point at local images", sum.Dir)
 }

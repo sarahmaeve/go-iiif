@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,6 +58,47 @@ func TestServer_ServesPreservedBundle(t *testing.T) {
 	}
 	if code, _ := get("/example.org_iiif_m/missing.json"); code != http.StatusNotFound {
 		t.Fatalf("missing file = %d, want 404", code)
+	}
+}
+
+func TestServer_RewritesServedManifest(t *testing.T) {
+	// Serve the real bundle fixture (manifest.json + provenance.json).
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		ts.URL+"/bodleian-c481/manifest.json", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET manifest: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	host := req.URL.Host
+	wantLocal := "http://" + host + "/bodleian-c481/0001.jpg"
+	if !strings.Contains(string(body), wantLocal) {
+		t.Fatalf("served manifest missing local image URL %q", wantLocal)
+	}
+	const origService = "https://iiif.bodleian.ox.ac.uk/iiif/image/c85d87de-abd9-43b1-abf4-c65a814dc0a8"
+	if strings.Contains(string(body), origService) {
+		t.Fatalf("served manifest still contains original service id")
+	}
+
+	// Non-manifest files pass through untouched.
+	req2, _ := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		ts.URL+"/bodleian-c481/provenance.json", nil)
+	resp2, err := ts.Client().Do(req2)
+	if err != nil {
+		t.Fatalf("GET provenance: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	p, _ := io.ReadAll(resp2.Body)
+	if !strings.Contains(string(p), origService) {
+		t.Fatalf("provenance.json should be served untouched (still hold the original URL)")
 	}
 }
 

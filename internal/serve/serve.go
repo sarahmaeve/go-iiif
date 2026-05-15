@@ -8,8 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 )
 
@@ -25,10 +28,56 @@ func New(root string) *Server {
 	return &Server{root: root}
 }
 
-// Handler is the static file handler (exposed for tests). http.Dir cleans
-// paths, so ".." traversal outside root is rejected by the stdlib.
+// Handler serves the preserved tree as static files, except a
+// `*/manifest.json` request is rewritten on the fly so its image URLs point
+// at this server's local copies (provenance-driven; the stored file stays
+// pristine). http.Dir cleans paths, so ".." traversal is rejected by stdlib.
 func (s *Server) Handler() http.Handler {
-	return http.FileServer(http.Dir(s.root))
+	files := http.FileServer(http.Dir(s.root))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(path.Clean(r.URL.Path), "/manifest.json") {
+			s.serveManifest(w, r, files)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
+// serveManifest serves the preserved manifest with image URLs rewritten to
+// this server. If provenance is absent or rewrite fails, it falls back to
+// serving the manifest untouched — serving must not break on a rewrite issue.
+func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files http.Handler) {
+	dir := http.Dir(s.root)
+	clean := path.Clean(r.URL.Path)
+
+	mf, err := dir.Open(clean)
+	if err != nil {
+		files.ServeHTTP(w, r) // let the file server produce the 404
+		return
+	}
+	manifest, err := io.ReadAll(mf)
+	_ = mf.Close()
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+
+	out := manifest
+	if pf, perr := dir.Open(path.Join(path.Dir(clean), "provenance.json")); perr == nil {
+		prov, _ := io.ReadAll(pf)
+		_ = pf.Close()
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		base := scheme + "://" + r.Host + strings.TrimSuffix(clean, "/manifest.json")
+		if rw, rerr := rewriteManifest(manifest, prov, base); rerr == nil {
+			out = rw
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
 // ListenAndServe binds addr (forced to loopback) and serves until ctx is
