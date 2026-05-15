@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"sync"
 	"time"
-
-	"golang.org/x/time/rate"
 )
 
 // RateLimiter gates outbound requests. Satisfied by *rate.Limiter; faked in
@@ -17,12 +15,10 @@ type RateLimiter interface {
 	Wait(ctx context.Context) error
 }
 
-// defaultPerHostRPS / defaultPerHostBurst are intentionally gentle: this is a
-// preservation crawler hitting cultural-heritage institutions, not a scraper.
-const (
-	defaultPerHostRPS   = 1.0
-	defaultPerHostBurst = 1
-)
+// Politeness defaults live in DefaultRatePolicy: a gentle per-host baseline
+// plus institution-specific overrides (Gallica is strongly rate-sensitive).
+// This is a preservation crawler hitting cultural-heritage institutions, not
+// a scraper.
 
 // PoliteFetcher decorates a Fetcher with the politeness controls from DESIGN
 // §4.3. It implements Fetcher, so it composes transparently with
@@ -52,6 +48,16 @@ type PoliteOption func(*PoliteFetcher)
 // (used in tests to inject a deterministic fake).
 func WithRateLimiterFunc(fn func(host string) RateLimiter) PoliteOption {
 	return func(p *PoliteFetcher) { p.newLimiter = fn }
+}
+
+// WithRatePolicy sets per-host politeness policies, replacing the built-in
+// DefaultRatePolicy.
+func WithRatePolicy(rp RatePolicy) PoliteOption {
+	return func(p *PoliteFetcher) {
+		p.newLimiter = func(host string) RateLimiter {
+			return newRateLimiter(rp.For(host))
+		}
+	}
 }
 
 // WithMaxConcurrent caps the total number of in-flight fetches across all
@@ -91,8 +97,8 @@ func NewPoliteFetcher(inner Fetcher, opts ...PoliteOption) *PoliteFetcher {
 		maxAttempts: 1,
 		baseDelay:   time.Second,
 		sleep:       sleepCtx,
-		newLimiter: func(string) RateLimiter {
-			return rate.NewLimiter(rate.Limit(defaultPerHostRPS), defaultPerHostBurst)
+		newLimiter: func(host string) RateLimiter {
+			return newRateLimiter(DefaultRatePolicy().For(host))
 		},
 	}
 	for _, opt := range opts {
