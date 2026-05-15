@@ -26,6 +26,7 @@ type options struct {
 	hasDate    bool
 	places     []string
 	max        int
+	workers    int
 	journal    string
 }
 
@@ -61,6 +62,7 @@ func parseArgs(args []string) (*options, error) {
 		to         = fs.Int("to", 0, "latest year (inclusive)")
 		place      = fs.String("place", "", "comma-separated place substrings")
 		max        = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
+		workers    = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
 		journal    = fs.String("journal", "", "path to a resumable crawl journal (optional)")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -77,6 +79,7 @@ func parseArgs(args []string) (*options, error) {
 		hasDate:    *from != 0 || *to != 0,
 		places:     splitCSV(*place),
 		max:        *max,
+		workers:    *workers,
 		journal:    *journal,
 	}
 	return o, nil
@@ -140,6 +143,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Fetcher: source.NewPoliteFetcher(source.NewHTTPFetcher()),
 		Mapping: defaultMapping(),
 		Filter:  o.filter(),
+		Workers: o.workers,
 	})
 
 	var n, matched int

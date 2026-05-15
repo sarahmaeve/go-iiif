@@ -21,6 +21,7 @@ func TestParseArgs(t *testing.T) {
 			"-from", "1400", "-to", "1500",
 			"-place", "Venice,Paris",
 			"-max", "7",
+			"-workers", "8",
 		})
 		if err != nil {
 			t.Fatalf("parseArgs: %v", err)
@@ -30,6 +31,9 @@ func TestParseArgs(t *testing.T) {
 		}
 		if o.max != 7 {
 			t.Fatalf("max = %d, want 7", o.max)
+		}
+		if o.workers != 8 {
+			t.Fatalf("workers = %d, want 8", o.workers)
 		}
 		f := o.filter()
 		wantLangs := []string{"fr", "la"}
