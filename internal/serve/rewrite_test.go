@@ -8,6 +8,39 @@ import (
 	"testing"
 )
 
+// A thumbnail pointing at a non-preserved remote service (Gallica uses a
+// different path than the image service) would 404 offline. The rewrite
+// drops any non-local thumbnail so nothing broken is requested offline.
+func TestRewriteManifest_DropsRemoteThumbnails(t *testing.T) {
+	manifest := []byte(`{
+	  "thumbnail":{"@id":"https://gallica.bnf.fr/ark:/12148/xyz.thumbnail"},
+	  "sequences":[{"canvases":[{
+	    "thumbnail":{"@id":"https://gallica.bnf.fr/ark:/12148/xyz/f1.thumbnail"},
+	    "images":[{"resource":{
+	      "@id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1/full/full/0/native.jpg",
+	      "service":{"@id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1"}
+	    }}]
+	  }]}]
+	}`)
+	prov := []byte(`{"images":[{"file":"0001.jpg",` +
+		`"service_id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1",` +
+		`"source_url":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1/full/full/0/native.jpg",` +
+		`"tile_dir":"0001"}]}`)
+
+	out, err := rewriteManifest(manifest, prov, "https://h/inst/slug")
+	if err != nil {
+		t.Fatalf("rewriteManifest: %v", err)
+	}
+	if strings.Contains(string(out), "thumbnail") {
+		t.Fatalf("remote thumbnail not dropped:\n%s", out)
+	}
+	// The preserved image must still be localized + re-pointed.
+	if !strings.Contains(string(out), "https://h/inst/slug/0001.jpg") ||
+		strings.Contains(string(out), "gallica.bnf.fr/iiif") {
+		t.Fatalf("image not localized alongside thumbnail drop:\n%s", out)
+	}
+}
+
 // When provenance records a tile_dir, the rewrite must RE-POINT the image
 // at the local level0 pyramid (deep zoom) instead of stripping the service.
 func TestRewriteManifest_RepointsToLocalTileService(t *testing.T) {

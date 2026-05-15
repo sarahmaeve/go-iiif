@@ -195,11 +195,12 @@ carries the most risk.
   manifest re-pointed, info.json localized; deep zoom confirmed in-browser).
   Whole multi-page Gallica manuscripts are now *obtainable* (inherently
   long under the 13s throttle, but resumable + observable — see below).
-- **Cosmetic offline gap:** a manifest/canvas `thumbnail` pointing at a
-  *different* service than the preserved image (e.g. Gallica's
-  `…ark.thumbnail`) is not localized, so it 404s offline. The content
-  image + deep zoom are unaffected; only a viewer's gallery-strip thumb
-  is broken. Localizing non-content thumbnails would need extra fetches.
+- **Thumbnails:** a manifest/canvas `thumbnail` pointing at a *different*
+  service than the preserved image (e.g. Gallica's `…ark.thumbnail`)
+  cannot be matched by provenance. `rewriteManifest` now **drops any
+  non-local `thumbnail`** (structure-agnostic) so nothing broken is
+  requested offline; the viewer derives a thumbnail from the now-local
+  level0 image service. A thumbnail already under the local base is kept.
 - **Whole-manuscript downloads** are practical via `-manifest`:
   (a) the working size-variant is memoized per manifest, so a dead
   `/full/max` is probed once, not on every page (~2× faster on Gallica);
@@ -248,7 +249,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Non-string v2 / object-valued v3 metadata values | ✅ done (`normalizeIIIFText`) | `internal/metadata` |
 | Free-text-embedded dates | ⬜ deferred (needs false-positive-rate decision) | DESIGN §4.2 |
 | Static HTTPS server over `BlobStore` (mkcert cert, `-no-tls`, graceful) | ✅ done | `internal/serve` |
-| Serve-time manifest rewrite (provenance-driven, v2+v3; re-points to local Image API service when tiled, else strips) | ✅ done | `internal/serve` |
+| Serve-time manifest rewrite (provenance-driven, v2+v3; re-points to local Image API service when tiled, else strips; drops non-local thumbnails) | ✅ done | `internal/serve` |
 | Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |

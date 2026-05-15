@@ -58,6 +58,7 @@ func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
 		return nil, fmt.Errorf("serve: decoding manifest: %w", err)
 	}
 	rewriteNode(doc, local)
+	stripRemoteThumbnails(doc, strings.TrimRight(base, "/"))
 
 	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -144,6 +145,49 @@ func rewriteNode(n any, local map[string]localTarget) {
 	case []any:
 		for _, e := range v {
 			rewriteNode(e, local)
+		}
+	}
+}
+
+// thumbnailURL extracts a representative URL from a IIIF thumbnail value,
+// which may be a string, an {@id|id} object, or an array of either.
+func thumbnailURL(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case map[string]any:
+		_, id := nodeID(t)
+		return id
+	case []any:
+		for _, e := range t {
+			if u := thumbnailURL(e); u != "" {
+				return u
+			}
+		}
+	}
+	return ""
+}
+
+// stripRemoteThumbnails deletes every `thumbnail` whose target is not under
+// base. Gallica (and others) point thumbnails at a different service than
+// the preserved image, so they cannot be matched by provenance; leaving
+// them would 404 offline. Dropping them is structure-agnostic and lets the
+// viewer derive a thumbnail from the now-local image service. Any thumbnail
+// already localized (under base) is kept.
+func stripRemoteThumbnails(n any, base string) {
+	switch v := n.(type) {
+	case map[string]any:
+		if tn, ok := v["thumbnail"]; ok {
+			if u := thumbnailURL(tn); u == "" || !strings.HasPrefix(u, base) {
+				delete(v, "thumbnail")
+			}
+		}
+		for _, child := range v {
+			stripRemoteThumbnails(child, base)
+		}
+	case []any:
+		for _, e := range v {
+			stripRemoteThumbnails(e, base)
 		}
 	}
 }
