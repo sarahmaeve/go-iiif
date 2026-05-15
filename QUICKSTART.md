@@ -4,6 +4,64 @@
 deep-zoom tiles, and serves them through an embedded Mirador viewer — fully
 offline. This walks from nothing to a manuscript open in your browser.
 
+## The happy path
+
+You found something you want — a manuscript on a library's website, a link
+in a footnote, a IIIF icon on a viewer. Getting it onto your machine is
+three moves:
+
+1. **Get its IIIF manifest URL.** Every IIIF item has one. Most viewers
+   show a IIIF drag-and-drop icon or a "IIIF manifest" link — copy that
+   URL. Some institutions also have a derivable pattern (Gallica below).
+2. **Preserve it** — `iiifpreserve -manifest <that-url>` downloads the
+   images into `~/iiif-images` and builds deep-zoom tiles.
+3. **Serve and view** — `iiifpreserve -serve 127.0.0.1:8443`, open the
+   page, click the item: it's now local, offline, zoomable. (First time
+   only: do the one-time HTTPS setup in §3 below, or add `-no-tls` and
+   use `http://`.)
+
+### Example A — Digital Bodleian
+
+You're looking at an item on `digital.bodleian.ox.ac.uk`. Its page has a
+**IIIF manifest** link (Bodleian manifests look like
+`https://iiif.bodleian.ox.ac.uk/iiif/manifest/<id>.json`). Copy it, then:
+
+```sh
+iiifpreserve -manifest https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c-a35b-4e9f-8426-c71f215d382d.json
+iiifpreserve -serve 127.0.0.1:8443
+# open https://127.0.0.1:8443/ → click the bodleian entry
+```
+
+That manifest is one image; it preserves in a couple of seconds and is
+immediately deep-zoomable in the viewer.
+
+### Example B — Gallica / BnF
+
+Gallica needs no link-hunting — the manifest is **derivable from the page
+URL**. A Gallica item page is `https://gallica.bnf.fr/ark:/12148/<ARK>`
+(e.g. you're viewing `…/ark:/12148/btv1b9055204k`). Insert `/iiif/` and
+append `/manifest.json`:
+
+```
+https://gallica.bnf.fr/ark:/12148/btv1b9055204k
+        → https://gallica.bnf.fr/iiif/ark:/12148/btv1b9055204k/manifest.json
+```
+
+```sh
+iiifpreserve -manifest https://gallica.bnf.fr/iiif/ark:/12148/btv1b9055204k/manifest.json
+iiifpreserve -serve 127.0.0.1:8443
+```
+
+This one (a BnF photograph) is a single 5127×7000 image — ~40 s, because
+BnF is politely rate-limited (13 s/host, by design). A multi-page Gallica
+manuscript takes proportionally longer but shows per-page progress and is
+resumable: re-running continues where it left off.
+
+> Not sure how big something is? `iiifpreserve -manifest <url> -dry-run`
+> prints the image count without downloading.
+
+The rest of this document is the same path with full detail and setup.
+
 ## 0. Prerequisites
 
 - **Go 1.26+** (`go version`)
