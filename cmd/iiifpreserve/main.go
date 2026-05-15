@@ -301,7 +301,12 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 		return 0
 	}
 
-	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body)
+	// Per-image progress to stderr — a whole Gallica manuscript under the
+	// 13s/host throttle takes a long time; a blind run is unusable.
+	progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
+		errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
+	})
+	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body, progress)
 	if err != nil {
 		errOut.line("iiifpreserve: preserve:", err)
 		return 1

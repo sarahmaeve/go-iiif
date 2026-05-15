@@ -123,6 +123,35 @@ func (f realJPEG) Fetch(_ context.Context, url string) ([]byte, error) {
 	return f.img, nil
 }
 
+func TestPreserve_ReportsProgress(t *testing.T) {
+	const mURL = "https://g.example/iiif/ms/manifest.json"
+	manifest := `{"@type":"sc:Manifest","sequences":[{"canvases":[` +
+		`{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/img1"}}}]},` +
+		`{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/img2"}}}]},` +
+		`{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/img3"}}}]}` +
+		`]}]}`
+	f := &countFetcher{manifestURL: mURL, manifest: manifest}
+
+	var events []ProgressEvent
+	_, err := Preserve(context.Background(), f, NewLocalBlobStore(t.TempDir()), mURL, []byte(manifest),
+		WithProgress(func(e ProgressEvent) { events = append(events, e) }))
+	if err != nil {
+		t.Fatalf("Preserve: %v", err)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("got %d progress events, want 3", len(events))
+	}
+	for i, e := range events {
+		if e.Index != i+1 || e.Total != 3 {
+			t.Fatalf("event %d = %+v, want Index %d Total 3", i, e, i+1)
+		}
+		if e.Action != "stored" {
+			t.Fatalf("event %d Action = %q, want stored", i, e.Action)
+		}
+	}
+}
+
 func TestPreserve_RendersTilePyramid(t *testing.T) {
 	manifestBytes := readManifest(t, "bodleian_f317ad0c.json")
 	const manifestURL = "https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c.json"

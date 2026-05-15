@@ -192,17 +192,25 @@ carries the most risk.
 - Preservation dogfooded end-to-end against **Bodleian**, the **IIIF
   Cookbook** (v3), and **Gallica/BnF** (single-image estampe
   `btv1b9055204k`: ~39s honouring the 13s/host throttle → tiled, served,
-  manifest re-pointed, info.json localized). Multi-page Gallica manuscripts
-  are impractical under the 13s throttle without a per-manifest image cap
-  (none yet — see below).
+  manifest re-pointed, info.json localized; deep zoom confirmed in-browser).
+  Whole multi-page Gallica manuscripts are now *obtainable* (inherently
+  long under the 13s throttle, but resumable + observable — see below).
 - **Cosmetic offline gap:** a manifest/canvas `thumbnail` pointing at a
   *different* service than the preserved image (e.g. Gallica's
   `…ark.thumbnail`) is not localized, so it 404s offline. The content
   image + deep zoom are unaffected; only a viewer's gallery-strip thumb
   is broken. Localizing non-content thumbnails would need extra fetches.
-- No per-manifest image cap; under strict per-host throttling a large
-  manuscript is impractical via `-manifest`. A `-max-images N` would make
-  any Gallica manuscript dogfoodable.
+- **Whole-manuscript downloads** are practical via `-manifest`:
+  (a) the working size-variant is memoized per manifest, so a dead
+  `/full/max` is probed once, not on every page (~2× faster on Gallica);
+  (b) per-image progress goes to stderr (`[42/300] 0042.jpg stored`);
+  (c) runs are resumable — `Preserve` skips already-stored images with no
+  HTTP, so an interrupted multi-hour run continues politely on re-run
+  (re-run of the estampe: 1.1s vs 38.7s, skipped, zero network). It is
+  still inherently long (BnF documents no rate limit; the conservative
+  13s is deliberate). No per-manifest image cap yet — a `-max-images N`
+  is a separate *triage/sampling* feature (grab first N pages to
+  evaluate), not the whole-manuscript path.
 - Working name for the project/binary; module path
   (`github.com/sarahmaeve/go-iiif` vs. a short bare path) — raised, undecided.
 - Confirm Change Discovery availability for Gallica (Bodleian: confirmed).
@@ -230,8 +238,9 @@ checks are `-tags=integration` opt-in or the manual binary.
 | IIIF **v3** collections (`items`) + v2 mixed `members` | ✅ done | `internal/source` |
 | Per-host `RatePolicy` (built-in Gallica 13s throttle) | ✅ done | `internal/source` |
 | Canvas image enumeration (v2 + v3) | ✅ done | `internal/preserve` |
-| Largest-image fetch (`/full/max`→`/full/full`→bare) | ✅ done | `internal/preserve` |
-| `Preserve`: store JPEGs + manifest + provenance; idempotent; per-image fault-tolerant | ✅ done | `internal/preserve` |
+| Largest-image fetch (`/full/max`→`/full/full`→bare); **working variant memoized per manifest** (skip dead probe after page 1, ~2× on Gallica) | ✅ done | `internal/preserve` |
+| `Preserve`: store JPEGs + manifest + provenance; idempotent (resumable); per-image fault-tolerant; `WithProgress` per-image events | ✅ done | `internal/preserve` |
+| CLI `-manifest` per-image progress to stderr (`[N/total] file action`) | ✅ done | `cmd/iiifpreserve` |
 | `BlobStore` (`local`, atomic writes) | ✅ done | `internal/preserve` |
 | `pipeline.Result` carries manifest bytes; storage root `-store` > config (`store=`) > `~/iiif-images`; `-dry-run` classify-only | ✅ done | `cmd/iiifpreserve` |
 | Single-resource downloader `-manifest <url>` (polite Go fetcher, skips filter; replaces curl) | ✅ done | `cmd/iiifpreserve` |

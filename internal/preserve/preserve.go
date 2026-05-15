@@ -62,11 +62,39 @@ func dirFor(manifestURL string) string {
 	}
 }
 
+// ProgressEvent reports the disposition of one image during Preserve, so a
+// long throttled run (e.g. a multi-page Gallica manuscript) is observable.
+type ProgressEvent struct {
+	Index, Total int    // 1-based image index, total images in the manifest
+	File         string // e.g. "0042.jpg"
+	Action       string // "stored" | "skipped" | "failed"
+}
+
+type preserveConfig struct{ progress func(ProgressEvent) }
+
+// Option configures Preserve.
+type Option func(*preserveConfig)
+
+// WithProgress invokes fn once per image with its disposition.
+func WithProgress(fn func(ProgressEvent)) Option {
+	return func(c *preserveConfig) { c.progress = fn }
+}
+
 // Preserve fetches every canvas image of a matched manifest at the largest
 // available size and stores the images, the manifest, and a provenance record
 // under one BlobStore prefix. A single image failure is recorded but does not
 // abort the manifest; already-stored images are skipped (idempotent).
-func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, manifestURL string, manifestBytes []byte) (Summary, error) {
+func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, manifestURL string, manifestBytes []byte, opts ...Option) (Summary, error) {
+	var cfg preserveConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	report := func(i, total int, file, action string) {
+		if cfg.progress != nil {
+			cfg.progress(ProgressEvent{Index: i, Total: total, File: file, Action: action})
+		}
+	}
+
 	images, err := EnumerateImages(manifestBytes)
 	if err != nil {
 		return Summary{ManifestURL: manifestURL}, err
@@ -83,6 +111,10 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		ManifestURL: manifestURL,
 		License:     extractLicense(manifestBytes),
 	}
+	// preferred remembers the size-variant that worked for this manifest so
+	// later pages skip re-probing a known-dead one (dominant cost under a
+	// strict per-host throttle, e.g. Gallica's 13s). -1 = unknown.
+	preferred := -1
 	for i, img := range images {
 		file := fmt.Sprintf("%04d.jpg", i+1)
 		key := dir + "/" + file
@@ -90,6 +122,7 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		exists, err := store.Exists(ctx, key)
 		if err != nil {
 			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %v", file, err))
+			report(i+1, sum.Images, file, "failed")
 			continue
 		}
 		if exists {
@@ -101,16 +134,20 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 				entry.TileDir = prefix
 			}
 			prov.Images = append(prov.Images, entry)
+			report(i+1, sum.Images, file, "skipped")
 			continue
 		}
 
-		data, used, err := FetchImage(ctx, fetcher, img.ServiceID)
+		data, used, variant, err := FetchImage(ctx, fetcher, img.ServiceID, preferred)
 		if err != nil {
 			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %v", file, err))
+			report(i+1, sum.Images, file, "failed")
 			continue
 		}
+		preferred = variant // memoize for the rest of this manifest
 		if err := store.Put(ctx, key, data); err != nil {
 			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %v", file, err))
+			report(i+1, sum.Images, file, "failed")
 			continue
 		}
 		sum.Stored++
@@ -124,6 +161,7 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			entry.TileDir = prefix
 		}
 		prov.Images = append(prov.Images, entry)
+		report(i+1, sum.Images, file, "stored")
 	}
 
 	provJSON, err := json.MarshalIndent(prov, "", "  ")
