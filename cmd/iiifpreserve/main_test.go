@@ -9,6 +9,23 @@ import (
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
 )
 
+func TestTLSSetupHint(t *testing.T) {
+	cert := "/Users/x/.config/iiifpreserve/certs/127.0.0.1+1.pem"
+	key := "/Users/x/.config/iiifpreserve/certs/127.0.0.1+1-key.pem"
+	h := tlsSetupHint(cert, key)
+
+	for _, want := range []string{
+		cert, key,
+		"mkcert -install",
+		"mkcert -cert-file " + cert + " -key-file " + key + " 127.0.0.1 localhost",
+		"-no-tls",
+	} {
+		if !contains(h, want) {
+			t.Errorf("tlsSetupHint missing %q; got:\n%s", want, h)
+		}
+	}
+}
+
 func TestParseConfig(t *testing.T) {
 	in := strings.NewReader(`
 # the persistent image library
@@ -124,6 +141,17 @@ func TestParseArgs(t *testing.T) {
 		}
 		if len(f.Places) != 2 || f.Places[0] != "Venice" {
 			t.Fatalf("Places = %v", f.Places)
+		}
+	})
+
+	t.Run("tls flags default to the mkcert-convention path", func(t *testing.T) {
+		o, err := parseArgs([]string{"-serve", "127.0.0.1:8443"})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.tlsCert != defaultTLSCert || o.tlsKey != defaultTLSKey {
+			t.Fatalf("tls defaults = %q / %q, want %q / %q",
+				o.tlsCert, o.tlsKey, defaultTLSCert, defaultTLSKey)
 		}
 	})
 

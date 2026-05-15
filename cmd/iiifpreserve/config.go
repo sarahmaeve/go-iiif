@@ -13,6 +13,16 @@ import (
 // when no -store flag and no config `store=` is given.
 const defaultStoreName = "iiif-images"
 
+// Default TLS cert/key paths follow mkcert's filename convention for
+// `mkcert 127.0.0.1 localhost` (one extra name → "+1"), under the same
+// per-tool config dir as the config file. With the standard one-time
+// mkcert setup, `iiifpreserve -serve` then needs no TLS flags. Mirrors
+// signatory's defaulted-cert-path approach.
+const (
+	defaultTLSCert = "~/.config/iiifpreserve/certs/127.0.0.1+1.pem"
+	defaultTLSKey  = "~/.config/iiifpreserve/certs/127.0.0.1+1-key.pem"
+)
+
 // configPath is the tiny key=value config file (no YAML/TOML dependency —
 // the project is deliberately stdlib-only).
 func configPath(home string) string {

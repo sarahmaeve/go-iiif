@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
@@ -79,8 +80,8 @@ func parseArgs(args []string) (*options, error) {
 		preserve   = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun     = fs.Bool("dry-run", false, "classify only; do not download images")
 		serve      = fs.String("serve", "", "serve the store over HTTPS at this addr (e.g. 127.0.0.1:8443) instead of crawling")
-		tlsCert    = fs.String("tls-cert", "", "TLS certificate PEM (e.g. from `mkcert 127.0.0.1`)")
-		tlsKey     = fs.String("tls-key", "", "TLS private key PEM")
+		tlsCert    = fs.String("tls-cert", defaultTLSCert, "TLS certificate PEM (default: mkcert convention path)")
+		tlsKey     = fs.String("tls-key", defaultTLSKey, "TLS private key PEM (default: mkcert convention path)")
 		noTLS      = fs.Bool("no-tls", false, "serve plain HTTP instead of HTTPS (debugging only)")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -319,6 +320,22 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	return 0
 }
 
+// tlsSetupHint is the remediation shown when the TLS cert/key are missing:
+// the exact one-time mkcert recipe to produce a browser-trusted cert at
+// the expected path, or the -no-tls escape. mkcert's -install adds its CA
+// to the OS/browser trust store so the served viewer has no warnings.
+func tlsSetupHint(cert, key string) string {
+	return fmt.Sprintf(
+		"iiifpreserve: TLS cert/key not found:\n"+
+			"  cert: %s\n  key:  %s\n"+
+			"set up a locally-trusted cert once (no browser warnings):\n"+
+			"  mkcert -install\n"+
+			"  mkdir -p %s\n"+
+			"  mkcert -cert-file %s -key-file %s 127.0.0.1 localhost\n"+
+			"or pass -no-tls to serve plain HTTP (debugging only)",
+		cert, key, filepath.Dir(cert), cert, key)
+}
+
 // runServe serves the preserved bundle dir over HTTPS until interrupted.
 func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	certFile, keyFile := o.tlsCert, o.tlsKey
@@ -326,17 +343,15 @@ func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
 		certFile, keyFile = "", ""
 		errOut.line("iiifpreserve: WARNING -no-tls serves plain HTTP (debugging only)")
 	} else {
-		if certFile == "" || keyFile == "" {
-			errOut.line("iiifpreserve: -serve needs -tls-cert and -tls-key " +
-				"(generate with `mkcert 127.0.0.1 localhost`), or pass -no-tls for plain HTTP")
-			return 2
-		}
+		home, _ := os.UserHomeDir()
+		certFile = expandHome(certFile, home)
+		keyFile = expandHome(keyFile, home)
 		for _, f := range []string{certFile, keyFile} {
-			// G703: f is an operator-supplied -tls-cert/-tls-key CLI flag,
-			// not attacker-controlled input.
+			// G703: f is an operator-supplied -tls-cert/-tls-key path
+			// (or its default), not attacker-controlled input.
 			if _, err := os.Stat(f); err != nil { //nolint:gosec // G703: operator-supplied TLS path
-				errOut.line("iiifpreserve: TLS file not found:", f)
-				return 1
+				errOut.line(tlsSetupHint(certFile, keyFile))
+				return 2
 			}
 		}
 	}

@@ -134,8 +134,12 @@ rewriting happens at serve time (§4.5), not on disk.
 
 ### 4.5 Serving (built)
 A static HTTPS file server over the BlobStore tree (stdlib only;
-operator-supplied cert via mkcert, mirroring signatory; `-no-tls` debug
-escape; loopback-only; graceful shutdown). A request for `*/manifest.json`
+operator-supplied cert via mkcert, mirroring signatory; `-tls-cert`/
+`-tls-key` default to the mkcert-convention path
+`~/.config/iiifpreserve/certs/127.0.0.1+1{,-key}.pem` so `-serve` needs
+no TLS flags after a one-time `mkcert -install` + generate; a missing
+cert prints the exact recipe; `-no-tls` debug escape; loopback-only;
+graceful shutdown). A request for `*/manifest.json`
 is **rewritten on the fly**: `rewriteManifest` reads the sibling
 `provenance.json`, and for every preserved image points its resource id at
 `<server>/<dir>/NNNN.jpg` and sets `format: image/jpeg`. If a tile pyramid
@@ -252,7 +256,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Institution-nested library layout `<root>/<host>/<slug>/` (`dirFor`) | ✅ done | `internal/preserve` |
 | Non-string v2 / object-valued v3 metadata values | ✅ done (`normalizeIIIFText`) | `internal/metadata` |
 | Free-text-embedded dates | ⬜ deferred (needs false-positive-rate decision) | DESIGN §4.2 |
-| Static HTTPS server over `BlobStore` (mkcert cert, `-no-tls`, graceful) | ✅ done | `internal/serve` |
+| Static HTTPS server over `BlobStore` (mkcert cert; defaulted cert paths + setup-hint on miss; `-no-tls`; graceful) | ✅ done | `internal/serve`, `cmd/iiifpreserve` |
 | Serve-time manifest rewrite (provenance-driven, v2+v3; re-points to local Image API service when tiled, else strips; drops non-local thumbnails) | ✅ done | `internal/serve` |
 | Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
