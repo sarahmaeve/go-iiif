@@ -1,6 +1,9 @@
 package metadata
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // Classification is the conservative three-bucket result of filtering a
 // WorkRecord (DESIGN §4.3). The zero value is Uncertain so that any unset
@@ -22,6 +25,7 @@ const (
 type Filter struct {
 	Languages []string   // ISO 639-1; any-of. Empty = no language constraint.
 	Date      *DateRange // nil = no date constraint.
+	Places    []string   // any-of, case-insensitive substring of Origin. Empty = no constraint.
 }
 
 // Classify applies the filter conservatively: Match only when every specified
@@ -30,7 +34,7 @@ type Filter struct {
 // which dominates Match.
 func (f Filter) Classify(rec WorkRecord) Classification {
 	result := Match
-	for _, c := range []Classification{f.classifyLanguage(rec), f.classifyDate(rec)} {
+	for _, c := range []Classification{f.classifyLanguage(rec), f.classifyDate(rec), f.classifyOrigin(rec)} {
 		switch c {
 		case NoMatch:
 			return NoMatch
@@ -66,6 +70,22 @@ func (f Filter) classifyDate(rec WorkRecord) Classification {
 	// Inclusive overlap of two year spans.
 	if rec.DateRange.Start <= f.Date.End && f.Date.Start <= rec.DateRange.End {
 		return Match
+	}
+	return NoMatch
+}
+
+func (f Filter) classifyOrigin(rec WorkRecord) Classification {
+	if len(f.Places) == 0 {
+		return Match
+	}
+	origin := strings.ToLower(strings.TrimSpace(rec.Origin))
+	if origin == "" {
+		return Uncertain
+	}
+	for _, p := range f.Places {
+		if strings.Contains(origin, strings.ToLower(strings.TrimSpace(p))) {
+			return Match
+		}
 	}
 	return NoMatch
 }
