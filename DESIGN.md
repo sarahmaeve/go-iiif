@@ -109,7 +109,10 @@ image download.
 > mapping/parser problem, not a reason for a reject/approve workflow.
 
 ### 4.3 Polite trawler
-Per-host token-bucket rate limit, global concurrency cap, exponential backoff on
+Per-host token-bucket rate limit (default 750 ms base spacing + a random
+pad, a uniform multiple of 30 ms in [30, 600] ms, so timing isn't perfectly
+periodic; Gallica keeps a deliberate fixed 13 s, no jitter), global
+concurrency cap, exponential backoff on
 429/503, conditional GET so re-runs are cheap, content-hash dedup, resumable
 checkpoint/journal so an interrupted large crawl restarts where it stopped.
 Image size requests the **largest available**: `/full/max/0/default.jpg`, then
@@ -245,7 +248,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Live validation vs. Gallica + Bodleian (manifests, recursive walk, full run, concurrent multi-host) | ✅ done | `*_test.go` `//go:build integration` |
 | `changestream` Source adapter (IIIF Change Discovery) | ✅ done | `internal/source` |
 | IIIF **v3** collections (`items`) + v2 mixed `members` | ✅ done | `internal/source` |
-| Per-host `RatePolicy` (built-in Gallica 13s throttle) | ✅ done | `internal/source` |
+| Per-host `RatePolicy` (default 750ms + 30–600ms jitter; built-in Gallica fixed 13s, no jitter) | ✅ done | `internal/source` |
 | Canvas image enumeration (v2 + v3) | ✅ done | `internal/preserve` |
 | Largest-image fetch (`/full/max`→`/full/full`→bare); **working variant memoized per manifest** (skip dead probe after page 1, ~2× on Gallica) | ✅ done | `internal/preserve` |
 | `Preserve`: store JPEGs + manifest + provenance; idempotent (resumable); per-image fault-tolerant; `WithProgress` per-image events | ✅ done | `internal/preserve` |

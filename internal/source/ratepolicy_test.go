@@ -2,11 +2,68 @@ package source
 
 import (
 	"context"
+	"errors"
 	neturl "net/url"
 	"testing"
 	"testing/synctest"
 	"time"
 )
+
+func TestDefaultRatePolicy_BaseAndJitter(t *testing.T) {
+	d := DefaultRatePolicy().Default
+	if d.MinInterval != 750*time.Millisecond {
+		t.Fatalf("Default.MinInterval = %v, want 750ms", d.MinInterval)
+	}
+	if d.Jitter != 600*time.Millisecond {
+		t.Fatalf("Default.Jitter = %v, want 600ms", d.Jitter)
+	}
+	if g := DefaultRatePolicy().For("gallica.bnf.fr"); g.MinInterval != 13*time.Second || g.Jitter != 0 {
+		t.Fatalf("Gallica = %+v, want 13s MinInterval and no jitter", g)
+	}
+}
+
+func TestJitterPad_BoundsAndStep(t *testing.T) {
+	const step = 30 * time.Millisecond
+	for range 2000 {
+		p := jitterPad(600 * time.Millisecond)
+		if p < step || p > 600*time.Millisecond {
+			t.Fatalf("pad %v outside [30ms, 600ms]", p)
+		}
+		if p%step != 0 {
+			t.Fatalf("pad %v is not a 30ms multiple", p)
+		}
+	}
+}
+
+// recordLimiter is a fake base limiter that never blocks, so jitterLimiter's
+// own pad/ctx behavior is what's under test.
+type recordLimiter struct{ calls int }
+
+func (r *recordLimiter) Wait(context.Context) error { r.calls++; return nil }
+
+func TestJitterLimiter_WaitsBaseThenPad(t *testing.T) {
+	base := &recordLimiter{}
+	jl := &jitterLimiter{base: base, maxPad: 30 * time.Millisecond} // steps=1 → exactly 30ms
+	start := time.Now()
+	if err := jl.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if base.calls != 1 {
+		t.Fatalf("base.Wait calls = %d, want 1", base.calls)
+	}
+	if d := time.Since(start); d < 28*time.Millisecond {
+		t.Fatalf("elapsed %v, want the ~30ms pad applied", d)
+	}
+}
+
+func TestJitterLimiter_HonorsContextDuringPad(t *testing.T) {
+	jl := &jitterLimiter{base: &recordLimiter{}, maxPad: 600 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := jl.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait err = %v, want context.Canceled (pad must honor ctx)", err)
+	}
+}
 
 func TestRatePolicy_For(t *testing.T) {
 	rp := RatePolicy{
