@@ -35,9 +35,25 @@ func New(root string) *Server {
 func (s *Server) Handler() http.Handler {
 	files := http.FileServer(http.Dir(s.root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(path.Clean(r.URL.Path), "/manifest.json") {
+		clean := path.Clean(r.URL.Path)
+		switch {
+		case clean == miradorRoute:
+			s.serveBundle(w)
+			return
+		case r.URL.Path == "/":
+			s.serveIndex(w)
+			return
+		case strings.HasSuffix(clean, "/manifest.json"):
 			s.serveManifest(w, r, files)
 			return
+		}
+		// A "/<dir>/" request for a preserved manifest renders the embedded
+		// Mirador viewer instead of the stdlib directory listing.
+		if strings.HasSuffix(r.URL.Path, "/") {
+			if dir, ok := s.hasManifest(clean); ok {
+				s.serveViewer(w, dir)
+				return
+			}
 		}
 		files.ServeHTTP(w, r)
 	})

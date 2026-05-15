@@ -7,6 +7,20 @@ import (
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
 )
 
+func TestServeBanner(t *testing.T) {
+	b := serveBanner("https", "127.0.0.1:8443", "/tmp/preserved")
+	// Researcher must be told the exact URL to open for the embedded viewer.
+	if !contains(b, "https://127.0.0.1:8443/") {
+		t.Errorf("banner missing viewer URL; got:\n%s", b)
+	}
+	if !contains(b, "Mirador") {
+		t.Errorf("banner does not mention the embedded Mirador viewer; got:\n%s", b)
+	}
+	if !contains(b, "/tmp/preserved") {
+		t.Errorf("banner missing served dir; got:\n%s", b)
+	}
+}
+
 func TestParseArgs(t *testing.T) {
 	t.Run("collection is required", func(t *testing.T) {
 		if _, err := parseArgs([]string{"-lang", "fr"}); err == nil {

@@ -238,6 +238,17 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	return 0
 }
 
+// serveBanner is the startup message: where the bundle is served and the
+// exact URL to open for the embedded Mirador viewer (no external viewer
+// needed — DESIGN §2).
+func serveBanner(scheme, addr, dir string) string {
+	base := scheme + "://" + addr
+	return fmt.Sprintf(
+		"iiifpreserve: serving %s at %s (Ctrl-C to stop)\n"+
+			"iiifpreserve: open %s/ in a browser for the embedded Mirador viewer\n",
+		dir, base, base)
+}
+
 // runServe serves the preserved bundle dir over HTTPS until interrupted.
 func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	certFile, keyFile := o.tlsCert, o.tlsKey
@@ -264,7 +275,7 @@ func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	if o.noTLS {
 		scheme = "http"
 	}
-	out.printf("iiifpreserve: serving %s at %s://%s (Ctrl-C to stop)\n", o.preserve, scheme, o.serve)
+	out.printf("%s", serveBanner(scheme, o.serve, o.preserve))
 
 	if err := serve.New(o.preserve).ListenAndServe(ctx, o.serve, certFile, keyFile); err != nil {
 		errOut.line("iiifpreserve: serve:", err)

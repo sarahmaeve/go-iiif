@@ -80,4 +80,40 @@ func TestIntegration_PreserveThenServe(t *testing.T) {
 		t.Fatalf("served manifest still references the preserved image's live service")
 	}
 	t.Logf("OK: preserved, served, and rewritten %s to point at local images", sum.Dir)
+
+	// The embedded Mirador viewer must reach this preserved manifest with no
+	// external viewer in the picture — the DESIGN §2 end state.
+	srv := "http://" + ln.Addr().String()
+	getBody := func(p string) (int, string, string) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv+p, nil)
+		if err != nil {
+			t.Fatalf("request %s: %v", p, err)
+		}
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", p, err)
+		}
+		defer func() { _ = r.Body.Close() }()
+		b, _ := io.ReadAll(r.Body)
+		return r.StatusCode, string(b), r.Header.Get("Content-Type")
+	}
+
+	if code, body, ct := getBody("/"); code != 200 ||
+		!strings.Contains(ct, "text/html") || !strings.Contains(body, `href="/`+sum.Dir+`/"`) {
+		t.Fatalf("index does not link preserved %s: code=%d ct=%q body=%s", sum.Dir, code, ct, body)
+	}
+	if code, body, ct := getBody("/" + sum.Dir + "/"); code != 200 ||
+		!strings.Contains(ct, "text/html") ||
+		!strings.Contains(body, "/__viewer__/mirador.min.js") ||
+		!strings.Contains(body, "/"+sum.Dir+"/manifest.json") {
+		t.Fatalf("viewer page broken: code=%d ct=%q body=%s", code, ct, body)
+	}
+	code, bundle, ct := getBody("/__viewer__/mirador.min.js")
+	if code != 200 || !strings.Contains(ct, "javascript") || len(bundle) < 100_000 {
+		t.Fatalf("embedded bundle not served: code=%d ct=%q len=%d", code, ct, len(bundle))
+	}
+	if !strings.Contains(bundle[:200], "exports") && !strings.Contains(bundle[:200], "define") {
+		t.Fatalf("embedded bundle is not the Mirador UMD module; head=%q", bundle[:200])
+	}
+	t.Logf("OK: embedded Mirador viewer reachable at %s/%s/ (bundle %d bytes)", srv, sum.Dir, len(bundle))
 }
