@@ -27,7 +27,7 @@ type MetadataEntry struct {
 }
 
 // WorkRecord is the typed, normalized view of a work's metadata that filters
-// run clean predicates over. Classification (match/uncertain/no-match) is the
+// run clean predicates over. Classification (match/no-match) is the
 // filter's responsibility, not this type's.
 type WorkRecord struct {
 	Langs     []string // ISO 639-1 codes

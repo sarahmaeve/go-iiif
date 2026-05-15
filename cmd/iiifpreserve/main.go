@@ -118,14 +118,9 @@ func formatResult(r pipeline.Result) string {
 	if r.Err != nil {
 		return "ERROR     " + r.ManifestURL + " :: " + r.Err.Error()
 	}
-	var label string
-	switch r.Class {
-	case metadata.Match:
-		label = "MATCH    "
-	case metadata.NoMatch:
+	label := "MATCH    "
+	if r.Class == metadata.NoMatch {
 		label = "NO-MATCH "
-	default:
-		label = "UNCERTAIN"
 	}
 	return fmt.Sprintf("%s %s :: langs=%v date=%d-%d origin=%q",
 		label, r.ManifestURL, r.Record.Langs,

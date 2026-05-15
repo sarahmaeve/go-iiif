@@ -31,8 +31,8 @@ type Config struct {
 	Workers int
 }
 
-// Result is the outcome for one manifest. On a fetch/parse failure Err is set
-// and Class is the zero value (Uncertain) — never silently dropped.
+// Result is the outcome for one manifest. On a fetch/parse failure Err is
+// set; Class is then meaningless (callers check Err first).
 type Result struct {
 	ManifestURL string
 	Class       metadata.Classification

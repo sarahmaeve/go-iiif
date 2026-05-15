@@ -42,7 +42,7 @@ Reference article: https://digitalorientalist.com/2026/05/12/running-iiif-locall
 | Discovery | **Per-institution crawl**, no aggregator | No dependency on Europeana/Biblissima; full control |
 | Source adapters | `collection` (universal IIIF Collection tree) + `changestream` (IIIF Change Discovery API, resumable, preferred when available) behind one `Source` interface | Collection tree is the guaranteed path; change streams enable cheap refresh |
 | Subsetting | Local **metadata normalization** → typed `WorkRecord` → predicate filter, applied **before** image download | No global IIIF search exists; metadata is free-text/multilingual/per-institution |
-| Filter policy | **Conservative**: three buckets `match` / `uncertain` / `no-match`; `uncertain` → review queue, not fetched until researcher approves | Avoids silently dropping real targets or wasting bandwidth on false positives |
+| Filter policy | **Two outcomes** `match` / `no-match`. A specified criterion only excludes when the metadata confidently fails it; when the field is absent the item is **kept** (lenient) | Preservation tool: losing a possibly-wanted manuscript is worse than an extra download. No reject/approve workflow |
 | Storage | **`BlobStore` interface**, `local` first; persistent root via `-store` > config file (`store=`) > `~/iiif-images` default; **nested by institution** `<root>/<host>/<slug>/` | Researcher's local drive as a long-lived library; interface keeps other backends possible later (no `aws-sdk-go`). Config is a tiny stdlib `key=value` parser (no YAML/TOML dep) |
 | Acquire modes | `-collection <url>` (crawl) **or** `-manifest <url>` (single resource, skips the filter, uses the polite Go fetcher) | A single named manifest is an intentional choice; `-manifest` also replaces curl for fixtures/dogfooding. `-dry-run` = classify only |
 | Per-item preservation | Per-canvas JPEG via the IIIF Image API at the **largest available size** (`/full/max` → `/full/full` → bare URL), plus the manifest and a provenance log | Grounded in the reference tool (`iiif-download`); a research preservation copy, not a commercial mirror |
@@ -57,7 +57,7 @@ Reference article: https://digitalorientalist.com/2026/05/12/running-iiif-locall
 config(institutions)
   → Source adapter (collection | changestream)
   → manifest fetch (conditional GET via ETag/If-Modified-Since, checkpointed)
-  → metadata normalize  → filter (match | uncertain | no-match)
+  → metadata normalize  → filter (match | no-match; lenient on missing data)
   → [match] enumerate canvas image services (v2 + v3)
   → polite image fetch: largest JPEG via the IIIF Image API
     (/full/max → /full/full → bare URL; per-host rate, backoff, dedup)
@@ -95,21 +95,18 @@ Presentation `metadata` is free-text, multilingual, per-institution inconsistent
 Approach: per-institution field-mapping rules + value parsers
 (century/date-range parser, language→ISO-639 normalizer) → typed
 `WorkRecord{langs, dateRange, origin, ...}`. Filters are clean predicates over
-typed records. Classify `match` / `uncertain` / `no-match`; never fetch
-`uncertain` until reviewed. Filter runs before any image download.
+typed records. Classify `match` / `no-match`; the filter runs before any
+image download.
 
-> **Implementation note — `uncertain` is load-bearing, confirmed on live
-> data.** A bounded live run over the Digital Bodleian top collection
-> produced items that parsed *date* and *origin* cleanly but yielded **no
-> language** under the default field mapping, so they classified
-> `uncertain` (→ review queue) rather than being silently dropped or
-> wrongly fetched — the conservative policy behaving exactly as intended.
-> This makes two things concrete: (1) field mapping is genuinely
-> per-institution and the default mapping is only a starting point —
-> Bodleian language metadata is either absent on some items or under a
-> label outside `{Language, Langue}`, still to be characterised; (2)
-> `uncertain` will be a *common*, not edge, bucket, so the review-queue UX
-> (§7) is on the critical path, not optional polish.
+> **Policy note — lenient on missing data.** A specified criterion
+> (`-lang`, `-from/-to`, `-place`) excludes an item only when the parsed
+> metadata *confidently* fails it. When the relevant field is absent (e.g.
+> a Digital Bodleian item with a clean date but no language under the
+> default field mapping), the item is **kept**, not excluded — losing a
+> possibly-wanted manuscript is worse than an extra download in a
+> preservation tool. Field mapping is still genuinely per-institution and
+> the default mapping is only a starting point; improving recall is a
+> mapping/parser problem, not a reason for a reject/approve workflow.
 
 ### 4.3 Polite trawler
 Per-host token-bucket rate limit, global concurrency cap, exponential backoff on
@@ -187,10 +184,9 @@ carries the most risk.
   `-store`/config/`-manifest`/`-dry-run`; institution-nested library.
 - **Re-tile existing bundles:** a bundle preserved *before* tiling is not
   re-tiled on idempotent re-run (skip branch only checks the flat jpg).
-- **Manual check only:** confirming Mirador's in-browser zoom UI cannot be
-  automated here; everything up to the served tiles/info.json is tested.
-- Review-queue UX (CLI list + approve, or a small served page). On the
-  critical path — see the §4.2 implementation note.
+- **In-browser deep zoom: confirmed working** (Mirador zoom-in verified
+  visually against a served, tiled bundle). Everything up to the served
+  tiles/info.json is also automated-test covered.
 - Free-text-embedded dates: deferred parser gap (needs false-positive-rate
   decision) that still costs some filter recall.
 - Preservation dogfooded against Bodleian + the IIIF Cookbook (v3); Gallica
@@ -209,7 +205,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Date parser (year, ranges, Arabic/Roman centuries, `circa` fuzzy ±20y) | ✅ done | `internal/metadata` |
 | Language → ISO-639 normalizer (8 langs: name/endonym/639-2) | ✅ done | `internal/metadata` |
 | `WorkRecord` builder + per-institution `FieldMapping` | ✅ done | `internal/metadata` |
-| Conservative `match`/`uncertain`/`no-match` filter (lang/date/origin) | ✅ done | `internal/metadata` |
+| Two-outcome `match`/`no-match` filter (lang/date/origin; lenient on missing data) | ✅ done | `internal/metadata` |
 | Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
 | HTTPS `Fetcher` (HTTPS-only, browser UA, status mapping) | ✅ done | `internal/source` |
@@ -237,13 +233,11 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
 | Live dogfood: `-manifest` Cookbook v3 + real Bodleian → tiled preserve → serve → localized + re-pointed + deep tile | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
 | Re-tile bundles preserved before tiling existed | ⬜ deferred (idempotent skip only checks flat jpg) | DESIGN §7 |
-| Review-queue UX | ⬜ not started (critical path, see §4.2 note) | DESIGN §7 |
-
 The binary runs the full `acquire → select → preserve → serve → view →
 deep-zoom` path live (one binary, real institution or single `-manifest`:
 filtered, polite, institution-nested on-disk copy with provenance and local
 IIIF tile pyramids, served over HTTPS with the manifest re-pointed at local
 images + a local Image API service, viewed in an embedded Mirador 4). The
-remaining high-value gaps gate whether the *right* items get preserved:
-the review-queue UX and the free-text-date parser (§4.2), plus re-tiling
-pre-tiling bundles. Project status is tracked here, not in assistant memory.
+remaining high-value gap is recall: the free-text-date parser (§4.2) and
+per-institution field mapping, plus re-tiling pre-tiling bundles. Project
+status is tracked here, not in assistant memory.

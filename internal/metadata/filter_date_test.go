@@ -24,10 +24,10 @@ func TestFilterClassify_Date(t *testing.T) {
 			want:   NoMatch,
 		},
 		{
-			name:   "record has no parsed date is uncertain",
+			name:   "record has no parsed date is kept (lenient)",
 			filter: Filter{Date: want1450},
 			rec:    WorkRecord{},
-			want:   Uncertain,
+			want:   Match,
 		},
 		{
 			name:   "no date constraint does not exclude",
@@ -65,9 +65,9 @@ func TestFilterClassify_Combination(t *testing.T) {
 			want: NoMatch,
 		},
 		{
-			name: "satisfied plus missing data is Uncertain",
+			name: "satisfied criterion plus missing data is kept (lenient)",
 			rec:  WorkRecord{Langs: []string{"fr"}},
-			want: Uncertain,
+			want: Match,
 		},
 		{
 			name: "missing language but failing date still NoMatch",

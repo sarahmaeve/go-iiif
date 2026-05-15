@@ -191,7 +191,6 @@ func TestFormatResult(t *testing.T) {
 	}{
 		{metadata.Match, "MATCH"},
 		{metadata.NoMatch, "NO-MATCH"},
-		{metadata.Uncertain, "UNCERTAIN"},
 	}
 	for _, c := range cases {
 		r := pipeline.Result{

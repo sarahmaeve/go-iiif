@@ -28,10 +28,10 @@ func TestFilterClassify_Language(t *testing.T) {
 			want:   NoMatch,
 		},
 		{
-			name:   "record has no language at all is uncertain",
+			name:   "missing language metadata is kept (lenient: preserve when unsure)",
 			filter: Filter{Languages: []string{"fr"}},
 			rec:    WorkRecord{},
-			want:   Uncertain,
+			want:   Match,
 		},
 		{
 			name:   "no language constraint does not exclude",
@@ -40,7 +40,7 @@ func TestFilterClassify_Language(t *testing.T) {
 			want:   Match,
 		},
 		{
-			name:   "Uncertain is the zero value of Classification",
+			name:   "Match is the zero value of Classification (unset never silently dropped)",
 			filter: Filter{Languages: []string{"fr"}},
 			rec:    WorkRecord{},
 			want:   Classification(0),

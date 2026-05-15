@@ -73,8 +73,8 @@ func TestPipeline_FetchErrorDoesNotAbortRun(t *testing.T) {
 	if bad.Err == nil || !errors.Is(bad.Err, source.ErrNotFound) {
 		t.Fatalf("bad result Err = %v, want wrapping source.ErrNotFound", bad.Err)
 	}
-	if bad.Class != metadata.Uncertain {
-		t.Fatalf("failed fetch Class = %v, want zero/Uncertain", bad.Class)
+	if bad.Class != metadata.Classification(0) {
+		t.Fatalf("failed fetch Class = %v, want the zero value (Err is what matters)", bad.Class)
 	}
 	if good := results[mGood]; good.Err != nil || good.Class != metadata.Match {
 		t.Fatalf("good result = %+v, want Match with no error", good)
@@ -102,15 +102,16 @@ func TestPipeline_ResultCarriesManifestBytes(t *testing.T) {
 
 func TestPipeline_ClassifiesManifests(t *testing.T) {
 	const (
-		mMatch     = "https://h.example.org/match/manifest.json"
-		mNoMatch   = "https://h.example.org/nomatch/manifest.json"
-		mUncertain = "https://h.example.org/uncertain/manifest.json"
+		mMatch   = "https://h.example.org/match/manifest.json"
+		mNoMatch = "https://h.example.org/nomatch/manifest.json"
+		mMissing = "https://h.example.org/missing-lang/manifest.json"
 	)
-	src := fakeSource{mMatch, mNoMatch, mUncertain}
+	src := fakeSource{mMatch, mNoMatch, mMissing}
 	fetcher := fakeFetcher{
-		mMatch:     manifestJSON("français", "1450"),
-		mNoMatch:   manifestJSON("Latin", "1450"),
-		mUncertain: `{"@type":"sc:Manifest","metadata":[{"label":"Date","value":"1450"}]}`,
+		mMatch:   manifestJSON("français", "1450"),
+		mNoMatch: manifestJSON("Latin", "1450"),
+		// Date in range but no language: lenient policy keeps it (Match).
+		mMissing: `{"@type":"sc:Manifest","metadata":[{"label":"Date","value":"1450"}]}`,
 	}
 
 	p := New(Config{
@@ -129,9 +130,9 @@ func TestPipeline_ClassifiesManifests(t *testing.T) {
 	}
 
 	want := map[string]metadata.Classification{
-		mMatch:     metadata.Match,
-		mNoMatch:   metadata.NoMatch,
-		mUncertain: metadata.Uncertain,
+		mMatch:   metadata.Match,
+		mNoMatch: metadata.NoMatch,
+		mMissing: metadata.Match, // lenient: missing filtered field is kept
 	}
 	for url, wc := range want {
 		if got[url] != wc {

@@ -34,10 +34,10 @@ func TestFilterClassify_Origin(t *testing.T) {
 			want:   NoMatch,
 		},
 		{
-			name:   "missing origin is Uncertain",
+			name:   "missing origin is kept (lenient)",
 			filter: Filter{Places: []string{"Venice"}},
 			rec:    WorkRecord{Origin: "  "},
-			want:   Uncertain,
+			want:   Match,
 		},
 		{
 			name:   "no place constraint does not exclude",

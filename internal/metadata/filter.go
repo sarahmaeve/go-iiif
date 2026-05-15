@@ -5,19 +5,19 @@ import (
 	"strings"
 )
 
-// Classification is the conservative three-bucket result of filtering a
-// WorkRecord (DESIGN §4.3). The zero value is Uncertain so that any unset
-// result defaults to the review queue — never a silent drop or fetch.
+// Classification is the result of filtering a WorkRecord against the
+// researcher's predicate. Two outcomes only. When a filtered field is
+// absent the policy is lenient (Match): this is a preservation tool, so
+// losing a possibly-wanted manuscript is worse than an extra download. The
+// zero value is Match, so an unset result is never silently dropped.
 type Classification int
 
 const (
-	// Uncertain: insufficient/ambiguous metadata to decide; route to the
-	// review queue, do not fetch until a researcher approves.
-	Uncertain Classification = iota
-	// NoMatch: the record confidently fails a criterion; exclude it.
+	// Match: keep it — every specified criterion is satisfied, or a
+	// criterion's data is absent (lenient).
+	Match Classification = iota
+	// NoMatch: the record confidently fails a specified criterion.
 	NoMatch
-	// Match: every specified criterion is confidently satisfied.
-	Match
 )
 
 // Filter is a researcher's selection predicate over typed WorkRecords. A
@@ -28,29 +28,20 @@ type Filter struct {
 	Places    []string   // any-of, case-insensitive substring of Origin. Empty = no constraint.
 }
 
-// Classify applies the filter conservatively: Match only when every specified
-// criterion is satisfied, NoMatch as soon as one confidently fails, Uncertain
-// when a criterion lacks the data to decide. NoMatch dominates Uncertain,
-// which dominates Match.
+// Classify returns NoMatch as soon as a specified criterion confidently
+// fails; otherwise Match. A criterion whose data is absent does not exclude
+// (lenient — preserve when unsure).
 func (f Filter) Classify(rec WorkRecord) Classification {
-	result := Match
-	for _, c := range []Classification{f.classifyLanguage(rec), f.classifyDate(rec), f.classifyOrigin(rec)} {
-		switch c {
-		case NoMatch:
-			return NoMatch
-		case Uncertain:
-			result = Uncertain
-		}
+	per := []Classification{f.classifyLanguage(rec), f.classifyDate(rec), f.classifyOrigin(rec)}
+	if slices.Contains(per, NoMatch) {
+		return NoMatch
 	}
-	return result
+	return Match
 }
 
 func (f Filter) classifyLanguage(rec WorkRecord) Classification {
-	if len(f.Languages) == 0 {
-		return Match
-	}
-	if len(rec.Langs) == 0 {
-		return Uncertain
+	if len(f.Languages) == 0 || len(rec.Langs) == 0 {
+		return Match // no constraint, or no data to exclude on
 	}
 	if slices.ContainsFunc(rec.Langs, func(l string) bool {
 		return slices.Contains(f.Languages, l)
@@ -61,11 +52,8 @@ func (f Filter) classifyLanguage(rec WorkRecord) Classification {
 }
 
 func (f Filter) classifyDate(rec WorkRecord) Classification {
-	if f.Date == nil {
-		return Match
-	}
-	if rec.DateRange == (DateRange{}) {
-		return Uncertain
+	if f.Date == nil || rec.DateRange == (DateRange{}) {
+		return Match // no constraint, or no parsed date to exclude on
 	}
 	// Inclusive overlap of two year spans.
 	if rec.DateRange.Start <= f.Date.End && f.Date.Start <= rec.DateRange.End {
@@ -80,7 +68,7 @@ func (f Filter) classifyOrigin(rec WorkRecord) Classification {
 	}
 	origin := strings.ToLower(strings.TrimSpace(rec.Origin))
 	if origin == "" {
-		return Uncertain
+		return Match // no origin data to exclude on
 	}
 	for _, p := range f.Places {
 		if strings.Contains(origin, strings.ToLower(strings.TrimSpace(p))) {
