@@ -30,6 +30,32 @@ func (c *countingFetcher) Fetch(ctx context.Context, url string) ([]byte, error)
 	return c.inner.Fetch(ctx, url)
 }
 
+// Proves the live v3 path: the IIIF Cookbook publishes a stable Presentation
+// 3.0 collection. One GET (its two items are Manifests, not recursed).
+func TestIntegration_LiveV3CookbookCollection(t *testing.T) {
+	const root = "https://iiif.io/api/cookbook/recipe/0032-collection/collection.json"
+	src := NewCollectionSource(NewPoliteFetcher(NewHTTPFetcher()), root)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var got []string
+	for u, err := range src.Manifests(ctx) {
+		if err != nil {
+			t.Fatalf("live v3 walk errored: %v", err)
+		}
+		got = append(got, u)
+	}
+	want := []string{
+		"https://iiif.io/api/cookbook/recipe/0032-collection/manifest-01.json",
+		"https://iiif.io/api/cookbook/recipe/0032-collection/manifest-02.json",
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("live v3 walk = %v, want %v", got, want)
+	}
+	t.Logf("OK: live v3 collection yielded %v", got)
+}
+
 func TestIntegration_LiveCollectionWalkBounded(t *testing.T) {
 	const root = "https://iiif.bodleian.ox.ac.uk/iiif/collection/top"
 

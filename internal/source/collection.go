@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"strings"
 )
 
 // CollectionSource walks a IIIF Presentation Collection tree, emitting the
@@ -20,14 +21,43 @@ func NewCollectionSource(fetcher Fetcher, rootURL string) *CollectionSource {
 	return &CollectionSource{fetcher: fetcher, root: rootURL}
 }
 
-// iiifCollection is the subset of a IIIF v2 Collection we need to walk it.
+// iiifCollection is the subset of a IIIF Collection we need to walk it,
+// covering both Presentation 2.x (manifests/collections/members, @id/@type)
+// and 3.0 (items, id/type).
 type iiifCollection struct {
-	Manifests []struct {
-		ID string `json:"@id"`
-	} `json:"manifests"`
-	Collections []struct {
-		ID string `json:"@id"`
-	} `json:"collections"`
+	Manifests   []v2Ref    `json:"manifests"`
+	Collections []v2Ref    `json:"collections"`
+	Members     []typedRef `json:"members"` // v2 mixed manifest/collection
+	Items       []typedRef `json:"items"`   // v3 mixed manifest/collection
+}
+
+type v2Ref struct {
+	ID string `json:"@id"`
+}
+
+// typedRef is one entry in a v2 "members" or v3 "items" array; it may be a
+// Manifest or a sub-Collection, in either Presentation version's key style.
+type typedRef struct {
+	IDV2   string `json:"@id"`
+	IDV3   string `json:"id"`
+	TypeV2 string `json:"@type"` // e.g. "sc:Manifest", "sc:Collection"
+	TypeV3 string `json:"type"`  // e.g. "Manifest", "Collection"
+}
+
+func (r typedRef) id() string {
+	if r.IDV3 != "" {
+		return r.IDV3
+	}
+	return r.IDV2
+}
+
+// kind returns "Manifest", "Collection", or "" — normalizing the v2 "sc:"
+// prefix away.
+func (r typedRef) kind() string {
+	if r.TypeV3 != "" {
+		return r.TypeV3
+	}
+	return strings.TrimPrefix(r.TypeV2, "sc:")
 }
 
 // Manifests yields every manifest URL reachable from the root collection,
@@ -56,6 +86,7 @@ func (c *CollectionSource) walk(ctx context.Context, url string, visited map[str
 	if err := json.Unmarshal(body, &col); err != nil {
 		return yield("", fmt.Errorf("source: decoding collection %s: %w", url, err))
 	}
+	// v2 typed arrays: manifests first, then descend sub-collections.
 	for _, m := range col.Manifests {
 		if !yield(m.ID, nil) {
 			return false
@@ -64,6 +95,23 @@ func (c *CollectionSource) walk(ctx context.Context, url string, visited map[str
 	for _, sub := range col.Collections {
 		if !c.walk(ctx, sub.ID, visited, yield) {
 			return false
+		}
+	}
+
+	// v2 "members" and v3 "items": a single ordered list mixing manifests
+	// and sub-collections — process in document order.
+	for _, refs := range [][]typedRef{col.Members, col.Items} {
+		for _, ref := range refs {
+			switch ref.kind() {
+			case "Manifest":
+				if !yield(ref.id(), nil) {
+					return false
+				}
+			case "Collection":
+				if !c.walk(ctx, ref.id(), visited, yield) {
+					return false
+				}
+			}
 		}
 	}
 	return true

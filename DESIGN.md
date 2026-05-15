@@ -154,7 +154,8 @@ checks are `-tags=integration` opt-in or the manual binary.
 | CLI entrypoint | ✅ done (provisional name) | `cmd/iiifpreserve` |
 | Live validation vs. Gallica + Bodleian (manifests, recursive walk, full run) | ✅ done | `*_test.go` `//go:build integration` |
 | `changestream` Source adapter (IIIF Change Discovery) | ⬜ not started | DESIGN §4.1 |
-| IIIF **v3** collections (`items`) / mixed `members`; non-string v2 metadata values | ⬜ deferred | — |
+| IIIF **v3** collections (`items`) + v2 mixed `members` | ✅ done | `internal/source` |
+| Non-string v2 metadata values (localized `@value`/`@language`) | ⬜ deferred | DESIGN §4.2 |
 | Free-text-embedded dates | ⬜ deferred (needs false-positive-rate decision) | DESIGN §4.2 |
 | Image fetch → keep max-permitted source → level-0 tiling | ⬜ not started | DESIGN §3, §4.3/§4.4 |
 | `BlobStore` (`local` + `s3-compatible`) + URL rewriting | ⬜ not started | DESIGN §4.4 |
