@@ -2,31 +2,16 @@ package pipeline
 
 import (
 	"context"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
+	"go.uber.org/goleak"
 )
 
-// assertGoroutinesSettle fails if the live goroutine count does not return to
-// (at most) base within a short window — a dependency-free leak check.
-func assertGoroutinesSettle(t *testing.T, base int) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		runtime.GC()
-		if n := runtime.NumGoroutine(); n <= base {
-			return
-		} else if time.Now().After(deadline) {
-			t.Fatalf("goroutines did not settle: have %d, base %d", n, base)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 // blockingCtxFetcher models a real fetcher: it blocks until the context is
-// cancelled, then returns. Mirrors HTTPFetcher/PoliteFetcher ctx-awareness.
+// cancelled, then returns. Mirrors HTTPFetcher/PoliteFetcher ctx-awareness so
+// the cancellation path is genuinely exercised.
 type blockingCtxFetcher struct{}
 
 func (blockingCtxFetcher) Fetch(ctx context.Context, _ string) ([]byte, error) {
@@ -43,7 +28,7 @@ func bigSource(n int) fakeSource {
 }
 
 func TestPipeline_ConcurrentEarlyBreakNoLeak(t *testing.T) {
-	base := runtime.NumGoroutine()
+	defer goleak.VerifyNone(t)
 
 	p := New(Config{
 		Source:  bigSource(50),
@@ -56,12 +41,10 @@ func TestPipeline_ConcurrentEarlyBreakNoLeak(t *testing.T) {
 	for range p.Run(context.Background()) {
 		break // consumer stops after the very first result
 	}
-
-	assertGoroutinesSettle(t, base)
 }
 
 func TestPipeline_ConcurrentContextCancelStops(t *testing.T) {
-	base := runtime.NumGoroutine()
+	defer goleak.VerifyNone(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p := New(Config{
@@ -86,5 +69,4 @@ func TestPipeline_ConcurrentContextCancelStops(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
 	}
-	assertGoroutinesSettle(t, base)
 }

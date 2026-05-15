@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
 )
 
 // gateFetcher blocks each Fetch on a shared channel so the test can hold
@@ -32,6 +34,8 @@ func (g *gateFetcher) Fetch(context.Context, string) ([]byte, error) {
 }
 
 func TestPoliteFetcher_GlobalConcurrencyCap(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
 	const cap = 2
 	const callers = 5
 

@@ -1,10 +1,11 @@
 package source
 
 import (
+	"context"
+	neturl "net/url"
 	"testing"
+	"testing/synctest"
 	"time"
-
-	"golang.org/x/time/rate"
 )
 
 func TestRatePolicy_For(t *testing.T) {
@@ -37,22 +38,56 @@ func TestDefaultRatePolicy_GallicaIsGentle(t *testing.T) {
 	}
 }
 
-func TestWithRatePolicy_BuildsPerHostLimiter(t *testing.T) {
-	pf := NewPoliteFetcher(nil, WithRatePolicy(RatePolicy{
-		Default: HostPolicy{MinInterval: 2 * time.Second, Burst: 1},
-		ByHost:  map[string]HostPolicy{"gallica.bnf.fr": {MinInterval: 13 * time.Second, Burst: 2}},
-	}))
+// stampingFetcher records the synthetic time of each Fetch, keyed by host.
+type stampingFetcher struct {
+	start time.Time
+	at    map[string][]time.Duration
+}
 
-	g, ok := pf.limiterFor("gallica.bnf.fr").(*rate.Limiter)
-	if !ok {
-		t.Fatalf("gallica limiter is %T, want *rate.Limiter", pf.limiterFor("gallica.bnf.fr"))
-	}
-	if g.Limit() != rate.Every(13*time.Second) || g.Burst() != 2 {
-		t.Fatalf("gallica limiter = %v/%d, want %v/2", g.Limit(), g.Burst(), rate.Every(13*time.Second))
-	}
+func (s *stampingFetcher) Fetch(_ context.Context, rawURL string) ([]byte, error) {
+	u, _ := neturl.Parse(rawURL)
+	s.at[u.Host] = append(s.at[u.Host], time.Since(s.start))
+	return []byte("x"), nil
+}
 
-	o := pf.limiterFor("other.example.org").(*rate.Limiter)
-	if o.Limit() != rate.Every(2*time.Second) || o.Burst() != 1 {
-		t.Fatalf("default limiter = %v/%d, want %v/1", o.Limit(), o.Burst(), rate.Every(2*time.Second))
-	}
+// TestWithRatePolicy_SpacesRequestsPerHost asserts the *observable* behavior:
+// requests to a host are spaced by that host's MinInterval, and a different
+// host uses the Default. Deterministic via testing/synctest — no real waiting,
+// no peeking at limiter internals.
+func TestWithRatePolicy_SpacesRequestsPerHost(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rec := &stampingFetcher{start: time.Now(), at: map[string][]time.Duration{}}
+		pf := NewPoliteFetcher(rec, WithRatePolicy(RatePolicy{
+			Default: HostPolicy{MinInterval: 2 * time.Second, Burst: 1},
+			ByHost:  map[string]HostPolicy{"slow.example.org": {MinInterval: 13 * time.Second, Burst: 1}},
+		}))
+		ctx := context.Background()
+
+		for range 3 {
+			if _, err := pf.Fetch(ctx, "https://slow.example.org/x"); err != nil {
+				t.Fatalf("Fetch slow: %v", err)
+			}
+		}
+		for range 2 {
+			if _, err := pf.Fetch(ctx, "https://def.example.org/y"); err != nil {
+				t.Fatalf("Fetch def: %v", err)
+			}
+		}
+
+		slow := rec.at["slow.example.org"]
+		if len(slow) != 3 {
+			t.Fatalf("slow host calls = %d, want 3", len(slow))
+		}
+		if slow[0] != 0 || slow[1]-slow[0] != 13*time.Second || slow[2]-slow[1] != 13*time.Second {
+			t.Fatalf("slow host timings = %v, want first immediate then 13s apart", slow)
+		}
+
+		def := rec.at["def.example.org"]
+		if len(def) != 2 {
+			t.Fatalf("default host calls = %d, want 2", len(def))
+		}
+		if def[1]-def[0] != 2*time.Second {
+			t.Fatalf("default host spacing = %v, want Default 2s", def[1]-def[0])
+		}
+	})
 }
