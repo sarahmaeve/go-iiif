@@ -189,8 +189,20 @@ carries the most risk.
   tiles/info.json is also automated-test covered.
 - Free-text-embedded dates: deferred parser gap (needs false-positive-rate
   decision) that still costs some filter recall.
-- Preservation dogfooded against Bodleian + the IIIF Cookbook (v3); Gallica
-  image fetch (13s/host spacing) not yet exercised end-to-end.
+- Preservation dogfooded end-to-end against **Bodleian**, the **IIIF
+  Cookbook** (v3), and **Gallica/BnF** (single-image estampe
+  `btv1b9055204k`: ~39s honouring the 13s/host throttle → tiled, served,
+  manifest re-pointed, info.json localized). Multi-page Gallica manuscripts
+  are impractical under the 13s throttle without a per-manifest image cap
+  (none yet — see below).
+- **Cosmetic offline gap:** a manifest/canvas `thumbnail` pointing at a
+  *different* service than the preserved image (e.g. Gallica's
+  `…ark.thumbnail`) is not localized, so it 404s offline. The content
+  image + deep zoom are unaffected; only a viewer's gallery-strip thumb
+  is broken. Localizing non-content thumbnails would need extra fetches.
+- No per-manifest image cap; under strict per-host throttling a large
+  manuscript is impractical via `-manifest`. A `-max-images N` would make
+  any Gallica manuscript dogfoodable.
 - Working name for the project/binary; module path
   (`github.com/sarahmaeve/go-iiif` vs. a short bare path) — raised, undecided.
 - Confirm Change Discovery availability for Gallica (Bodleian: confirmed).
@@ -231,7 +243,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
-| Live dogfood: `-manifest` Cookbook v3 + real Bodleian → tiled preserve → serve → localized + re-pointed + deep tile | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
+| Live dogfood: `-manifest` Cookbook v3 + real Bodleian + **Gallica/BnF estampe** → tiled preserve → serve → localized + re-pointed + deep tile (Gallica honoured the 13s throttle) | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
 | Re-tile bundles preserved before tiling existed | ⬜ deferred (idempotent skip only checks flat jpg) | DESIGN §7 |
 The binary runs the full `acquire → select → preserve → serve → view →
 deep-zoom` path live (one binary, real institution or single `-manifest`:
