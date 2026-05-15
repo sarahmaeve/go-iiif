@@ -20,7 +20,7 @@ type DateRange struct {
 }
 
 var (
-	reYear  = regexp.MustCompile(`^\d{1,4}$`)
+	reYear    = regexp.MustCompile(`^\d{1,4}$`)
 	reRange   = regexp.MustCompile(`^(\d{1,4})\s*[-–—]\s*(\d{1,4})$`)
 	reCentury = regexp.MustCompile(`^(\d{1,2})(?:st|nd|rd|th)\s+century$`)
 	reCirca   = regexp.MustCompile(`^(?:circa|ca\.?|c\.?)\s*(\d{1,4})$`)
