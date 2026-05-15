@@ -37,7 +37,10 @@ type Result struct {
 	ManifestURL string
 	Class       metadata.Classification
 	Record      metadata.WorkRecord
-	Err         error
+	// Manifest is the raw fetched manifest, carried so a Match can be
+	// preserved without re-fetching it. Nil on a fetch failure.
+	Manifest []byte
+	Err      error
 }
 
 // Pipeline runs a Config.
@@ -157,5 +160,6 @@ func (p *Pipeline) process(ctx context.Context, url string) Result {
 		ManifestURL: url,
 		Class:       p.cfg.Filter.Classify(rec),
 		Record:      rec,
+		Manifest:    body,
 	}
 }

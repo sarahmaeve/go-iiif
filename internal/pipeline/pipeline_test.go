@@ -81,6 +81,25 @@ func TestPipeline_FetchErrorDoesNotAbortRun(t *testing.T) {
 	}
 }
 
+func TestPipeline_ResultCarriesManifestBytes(t *testing.T) {
+	const m = "https://h.example.org/m/manifest.json"
+	body := manifestJSON("français", "1450")
+	p := New(Config{
+		Source:  fakeSource{m},
+		Fetcher: fakeFetcher{m: body},
+		Mapping: metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate},
+		Filter:  metadata.Filter{Languages: []string{"fr"}},
+	})
+
+	var got Result
+	for r := range p.Run(context.Background()) {
+		got = r
+	}
+	if string(got.Manifest) != body {
+		t.Fatalf("Result.Manifest = %q, want the fetched manifest bytes %q", got.Manifest, body)
+	}
+}
+
 func TestPipeline_ClassifiesManifests(t *testing.T) {
 	const (
 		mMatch     = "https://h.example.org/match/manifest.json"

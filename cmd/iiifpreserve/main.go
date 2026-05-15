@@ -16,6 +16,7 @@ import (
 
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
+	"github.com/sarahmaeve/go-iiif/internal/preserve"
 	"github.com/sarahmaeve/go-iiif/internal/source"
 )
 
@@ -28,6 +29,7 @@ type options struct {
 	max        int
 	workers    int
 	journal    string
+	preserve   string // output dir; empty = classify only (no download)
 }
 
 // filter builds the researcher's selection predicate from the parsed flags.
@@ -64,6 +66,7 @@ func parseArgs(args []string) (*options, error) {
 		max        = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
 		workers    = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
 		journal    = fs.String("journal", "", "path to a resumable crawl journal (optional)")
+		preserve   = fs.String("preserve", "", "output dir: download matched manifests' images here (default: classify only)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -81,6 +84,7 @@ func parseArgs(args []string) (*options, error) {
 		max:        *max,
 		workers:    *workers,
 		journal:    *journal,
+		preserve:   *preserve,
 	}
 	return o, nil
 }
@@ -149,8 +153,11 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	var src source.Source = source.NewCollectionSource(
-		source.NewPoliteFetcher(source.NewHTTPFetcher()), o.collection)
+	// One polite fetcher shared across discovery, manifest, and image
+	// fetches so a single per-host rate limiter governs all traffic.
+	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
+
+	var src source.Source = source.NewCollectionSource(fetcher, o.collection)
 	if o.journal != "" {
 		j, err := source.OpenFileJournal(o.journal)
 		if err != nil {
@@ -167,13 +174,18 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 
 	p := pipeline.New(pipeline.Config{
 		Source:  src,
-		Fetcher: source.NewPoliteFetcher(source.NewHTTPFetcher()),
+		Fetcher: fetcher,
 		Mapping: defaultMapping(),
 		Filter:  o.filter(),
 		Workers: o.workers,
 	})
 
-	var n, matched int
+	var store preserve.BlobStore
+	if o.preserve != "" {
+		store = preserve.NewLocalBlobStore(o.preserve)
+	}
+
+	var n, matched, preserved int
 	for r := range p.Run(ctx) {
 		out.line(formatResult(r))
 		if out.err != nil {
@@ -183,12 +195,22 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		n++
 		if r.Err == nil && r.Class == metadata.Match {
 			matched++
+			if store != nil {
+				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest)
+				if err != nil {
+					errOut.line("iiifpreserve: preserve", r.ManifestURL, "::", err)
+				} else {
+					preserved += sum.Stored
+					out.printf("  preserved %d image(s) to %s (skipped %d, %d failed)\n",
+						sum.Stored, sum.Dir, sum.Skipped, len(sum.Failures))
+				}
+			}
 		}
 		if o.max > 0 && n >= o.max {
 			break
 		}
 	}
-	errOut.printf("iiifpreserve: %d manifests, %d match\n", n, matched)
+	errOut.printf("iiifpreserve: %d manifests, %d match, %d images preserved\n", n, matched, preserved)
 
 	if out.err != nil || errOut.err != nil {
 		return 1
