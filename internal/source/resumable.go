@@ -53,7 +53,9 @@ type FileJournal struct {
 // OpenFileJournal opens (creating if needed) the journal at path and loads
 // any previously recorded completions.
 func OpenFileJournal(path string) (*FileJournal, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	// G304: path is an explicit operator-supplied CLI flag (-journal), the
+	// crawl checkpoint location — not attacker-controlled input.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644) //nolint:gosec // G304: operator-supplied journal path
 	if err != nil {
 		return nil, fmt.Errorf("source: opening journal %s: %w", path, err)
 	}

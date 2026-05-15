@@ -116,10 +116,33 @@ func defaultMapping() metadata.FieldMapping {
 	}
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+// cliWriter records the first write error so an output failure — most
+// importantly a broken pipe on stdout (`iiifpreserve … | head`) — surfaces in
+// the exit code and stops further work, rather than being silently dropped.
+type cliWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (c *cliWriter) line(a ...any) {
+	if c.err == nil {
+		_, c.err = fmt.Fprintln(c.w, a...)
+	}
+}
+
+func (c *cliWriter) printf(format string, a ...any) {
+	if c.err == nil {
+		_, c.err = fmt.Fprintf(c.w, format, a...)
+	}
+}
+
+func run(args []string, stdoutW, stderrW io.Writer) int {
+	out := &cliWriter{w: stdoutW}
+	errOut := &cliWriter{w: stderrW}
+
 	o, err := parseArgs(args)
 	if err != nil {
-		fmt.Fprintln(stderr, "iiifpreserve:", err)
+		errOut.line("iiifpreserve:", err)
 		return 2
 	}
 
@@ -131,10 +154,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if o.journal != "" {
 		j, err := source.OpenFileJournal(o.journal)
 		if err != nil {
-			fmt.Fprintln(stderr, "iiifpreserve:", err)
+			errOut.line("iiifpreserve:", err)
 			return 1
 		}
-		defer func() { _ = j.Close() }()
+		defer func() {
+			if cerr := j.Close(); cerr != nil {
+				errOut.line("iiifpreserve: closing journal:", cerr)
+			}
+		}()
 		src = source.NewResumableSource(src, j)
 	}
 
@@ -148,7 +175,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var n, matched int
 	for r := range p.Run(ctx) {
-		fmt.Fprintln(stdout, formatResult(r))
+		out.line(formatResult(r))
+		if out.err != nil {
+			// stdout sink is gone (e.g. broken pipe): stop crawling.
+			break
+		}
 		n++
 		if r.Err == nil && r.Class == metadata.Match {
 			matched++
@@ -157,7 +188,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 	}
-	fmt.Fprintf(stderr, "iiifpreserve: %d manifests, %d match\n", n, matched)
+	errOut.printf("iiifpreserve: %d manifests, %d match\n", n, matched)
+
+	if out.err != nil || errOut.err != nil {
+		return 1
+	}
 	return 0
 }
 

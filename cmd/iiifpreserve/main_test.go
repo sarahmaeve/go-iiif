@@ -95,8 +95,8 @@ func contains(s, sub string) bool {
 	return false
 }
 
-var errBoom = errBoomT{}
+var errBoom = boomError{}
 
-type errBoomT struct{}
+type boomError struct{}
 
-func (errBoomT) Error() string { return "boom" }
+func (boomError) Error() string { return "boom" }

@@ -56,7 +56,7 @@ func TestPoliteFetcher_RetriesTransientStatuses(t *testing.T) {
 	if len(slept) != 2 {
 		t.Fatalf("slept %d times, want 2", len(slept))
 	}
-	if !(slept[0] == 100*time.Millisecond && slept[1] == 200*time.Millisecond) {
+	if slept[0] != 100*time.Millisecond || slept[1] != 200*time.Millisecond {
 		t.Fatalf("backoff = %v, want exponential [100ms 200ms]", slept)
 	}
 }
