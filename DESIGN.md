@@ -1,9 +1,21 @@
 # Local IIIF Preservation Tool — Design
 
-> Status: discovery + selection half implemented and live-validated against
-> both pilot institutions; preservation half (image fetch → tile → store →
-> serve) not yet built. Working name TBD (binary provisionally
-> `iiifpreserve`). Single Go binary. See §8 for the implementation status.
+> Status: **acquire → select → preserve → serve → view → deep-zoom is built
+> and live-dogfooded.** One binary crawls a real institution politely (or
+> takes a single `-manifest <url>`), filters, writes a complete on-disk copy
+> (images + **local IIIF level0 tile pyramids** + manifest + provenance) into
+> a persistent institution-nested library, serves it over HTTPS with the
+> manifest **rewritten on the fly** to point at local images *and* a local
+> Image API service, and embeds a **Mirador 4** viewer so a researcher needs
+> no external tools. Deep zoom works from local static tiles.
+>
+> **Status detail:** project status lives in this document (§8), not in
+> assistant memory. One caveat: rewrite is serve-time, so a dumb static host
+> (S3) would serve the un-rewritten manifest — acceptable given local-first
+> scope. Known limitation: bundles preserved *before* tiling existed are not
+> re-tiled on an idempotent re-run. Working name TBD (binary provisionally
+> `iiifpreserve`). Single Go binary (one non-stdlib dep:
+> `golang.org/x/image`). See §8 for component status.
 
 ## 1. Goal
 
@@ -26,15 +38,17 @@ Reference article: https://digitalorientalist.com/2026/05/12/running-iiif-locall
 | Area | Decision | Rationale |
 |---|---|---|
 | Language | **Go**, single static binary | One toolchain, easy embed of viewer asset, no Python/Node |
-| Viewer | **Vendored prebuilt JS bundle** (OpenSeadragon / Triiiceratops / Mirador), embedded in binary | "No Node" = no Node runtime or npm build; a browser-run static asset is allowed |
+| Viewer | **Built.** Vendored prebuilt **Mirador 4** UMD bundle (`mirador@4.0.0`), `go:embed`-ed | "No Node" = no Node runtime or npm build; a browser-run static asset is allowed. Mirador chosen for the multi-up/annotation feature set |
 | Discovery | **Per-institution crawl**, no aggregator | No dependency on Europeana/Biblissima; full control |
 | Source adapters | `collection` (universal IIIF Collection tree) + `changestream` (IIIF Change Discovery API, resumable, preferred when available) behind one `Source` interface | Collection tree is the guaranteed path; change streams enable cheap refresh |
 | Subsetting | Local **metadata normalization** → typed `WorkRecord` → predicate filter, applied **before** image download | No global IIIF search exists; metadata is free-text/multilingual/per-institution |
 | Filter policy | **Conservative**: three buckets `match` / `uncertain` / `no-match`; `uncertain` → review queue, not fetched until researcher approves | Avoids silently dropping real targets or wasting bandwidth on false positives |
-| Storage | **`BlobStore` interface**: `local` + `s3-compatible` (AWS/MinIO/Backblaze/R2) | Researcher choice of local drive or personal object storage |
-| Per-item preservation | Keep **max institution-permitted source image + level-0 tile pyramid** | Re-tilable offline; a true preservation copy, not just view tiles |
-| Serving | Static IIIF Image API (level 0) + preserved Presentation manifests with rewritten image-service URLs, served straight from `BlobStore` | Works even without the binary running; S3-friendly |
-| Tiling | Reimplemented in Go, in-process (not shelling out to `iiif-tiler-rust`) | Removes the article's loose-coupling seam |
+| Storage | **`BlobStore` interface**, `local` first; persistent root via `-store` > config file (`store=`) > `~/iiif-images` default; **nested by institution** `<root>/<host>/<slug>/` | Researcher's local drive as a long-lived library; interface keeps other backends possible later (no `aws-sdk-go`). Config is a tiny stdlib `key=value` parser (no YAML/TOML dep) |
+| Acquire modes | `-collection <url>` (crawl) **or** `-manifest <url>` (single resource, skips the filter, uses the polite Go fetcher) | A single named manifest is an intentional choice; `-manifest` also replaces curl for fixtures/dogfooding. `-dry-run` = classify only |
+| Per-item preservation | Per-canvas JPEG via the IIIF Image API at the **largest available size** (`/full/max` → `/full/full` → bare URL), plus the manifest and a provenance log | Grounded in the reference tool (`iiif-download`); a research preservation copy, not a commercial mirror |
+| Serving | **Built.** Static HTTPS file server over the BlobStore tree; `*/manifest.json` rewritten on the fly (serve-time, provenance-driven) so images resolve locally. Stored manifest stays pristine | Simplest correct; no config, no second file; loopback-only |
+| Embedded viewer | **Built.** Mirador 4 served at `/` (index of preserved manifests) and `/<dir>/` (viewer), bundle at `/__viewer__/mirador.min.js` | A researcher needs no external viewer; manifest passed via a data-attribute to dodge html/template JS-string `\/` escaping |
+| Tiling + deep zoom | **Built.** Preserve generates a local IIIF Image API **level0** static tile pyramid (`golang.org/x/image/draw`, 512px tiles) per image; serve rewrites `info.json` `id` and re-points the manifest service | Deep zoom from local static files; matches institutional viewer functionality. Best-effort: an undecodable image keeps the flat JPEG and the serve-time strip fallback |
 | Pilot institutions | **Gallica (BnF)** and **Digital Bodleian** | Large French collection + well-structured metadata to stress-test the normalizer |
 
 ## 3. Pipeline
@@ -44,13 +58,19 @@ config(institutions)
   → Source adapter (collection | changestream)
   → manifest fetch (conditional GET via ETag/If-Modified-Since, checkpointed)
   → metadata normalize  → filter (match | uncertain | no-match)
-  → [match] polite image fetch (per-host token bucket, backoff, content-hash dedup)
-  → keep max institution-permitted source image
-  → tile to level-0 pyramid
-  → BlobStore.Put (local | s3)
-  → rewrite Presentation manifest image-service URLs → store alongside tiles
-serve: static IIIF Image API (level 0) + preserved Presentation manifests from BlobStore
-view:  embedded prebuilt viewer bundle
+  → [match] enumerate canvas image services (v2 + v3)
+  → polite image fetch: largest JPEG via the IIIF Image API
+    (/full/max → /full/full → bare URL; per-host rate, backoff, dedup)
+  → per image: render a local IIIF level0 static tile pyramid + info.json
+  → BlobStore.Put (local, institution-nested): per-manifest dir of JPEGs +
+    per-image tile pyramids + manifest.json + provenance (source URLs,
+    recorded license, per-image tile_dir)
+  [preservation ends here — content is fully saved and deep-zoomable]
+
+serve (built): static HTTPS server over BlobStore; */manifest.json
+  rewritten at serve time so images resolve locally and re-point at the
+  local Image API service; */info.json `id` rewritten to the request URL;
+  embedded Mirador 4 viewer at / and /<dir>/ (stored files stay pristine).
 ```
 
 ## 4. Key components
@@ -95,14 +115,48 @@ typed records. Classify `match` / `uncertain` / `no-match`; never fetch
 Per-host token-bucket rate limit, global concurrency cap, exponential backoff on
 429/503, conditional GET so re-runs are cheap, content-hash dedup, resumable
 checkpoint/journal so an interrupted large crawl restarts where it stopped.
-Honor `info.json` profile / `maxWidth` / `sizes` and manifest `rights`/license
-before selecting the "max permitted" derivative — politeness and legality.
+Image size requests the **largest available**: `/full/max/0/default.jpg`, then
+`/full/full/0/default.jpg`, then the bare resource URL (institutions serving
+static images, no Image API). License, if present, is **recorded for
+provenance**, not used to gate downloads — this is a research tool, not a
+commercial mirror.
 
-### 4.4 Storage & serving
-`BlobStore` interface, `local` + `s3-compatible` implementations. Per item:
-max-permitted source image + level-0 pyramid + rewritten Presentation manifest.
-Level-0 means zoom levels and tile size are baked at download time; keeping the
-source image makes offline re-tiling possible without re-fetching.
+### 4.4 Storage
+`BlobStore` interface, `local` implementation first (the interface keeps other
+backends possible; `aws-sdk-go` is explicitly out). Per matched manifest: a
+directory of per-canvas JPEGs + a local IIIF level0 tile pyramid per image
+(`<NNNN>/info.json` + `<NNNN>/<region>/<size>/0/default.jpg`) + the saved
+`manifest.json` + a provenance log (manifest URL, recorded license,
+per-image source URLs and `tile_dir`). The root is institution-nested
+(`<root>/<host>/<slug>/`). Writes are atomic (temp+rename); re-runs skip
+already-stored images. Tiling is best-effort: an undecodable image keeps
+just the flat JPEG.
+
+The saved `manifest.json` is stored **unmodified** (fidelity/provenance);
+rewriting happens at serve time (§4.5), not on disk.
+
+### 4.5 Serving (built)
+A static HTTPS file server over the BlobStore tree (stdlib only;
+operator-supplied cert via mkcert, mirroring signatory; `-no-tls` debug
+escape; loopback-only; graceful shutdown). A request for `*/manifest.json`
+is **rewritten on the fly**: `rewriteManifest` reads the sibling
+`provenance.json`, and for every preserved image points its resource id at
+`<server>/<dir>/NNNN.jpg` and sets `format: image/jpeg`. If a tile pyramid
+was built (`tile_dir`), it **re-points** the IIIF Image API `service` at the
+local `<server>/<dir>/NNNN` (`ImageService3`, `level0`) so the viewer deep-
+zooms from local static tiles; otherwise it strips the `service` (a service-
+less image is a valid static IIIF image). A request for `*/info.json` has
+its `id` rewritten to the request URL (IIIF requires `id` == the served
+URL). Provenance-driven and structure-agnostic, so v2 and v3 work with no
+traversal-order concerns; stored files stay pristine; a missing/failed
+rewrite falls back to the untouched file (serving must not break).
+
+> **Real-data note.** Manifests reference an image server in several roles.
+> Only *preserved content* is localized: the content image and per-canvas
+> thumbnails (same preserved service) are rewritten; the manifest `logo`
+> points at a different, un-preserved service and correctly stays remote
+> (it is institutional chrome, not the work). A dead logo link offline is
+> acceptable; rewriting it would be wrong.
 
 ## 5. Known risks / validate early
 
@@ -110,14 +164,13 @@ source image makes offline re-tiling possible without re-fetching.
    label/date conventions differ; century/date-range parser and language
    normalizer need real-data testing first. Prime TDD target — date-string
    parsing is naturally test-first.
-2. **Change Discovery availability uncertain** per institution. Do not assert
-   Gallica/Bodleian publish Activity Streams until verified. `collection`
-   adapter is the guaranteed path; build it first.
-3. **License / permitted-size compliance.** Read `info.json`
-   profile/`maxWidth`/`sizes` and manifest `rights`/license before choosing the
-   max derivative.
-4. **Loose-coupling seam** from the source article eliminated by in-process
-   tiling.
+2. **Change Discovery availability** — RESOLVED for Bodleian: it publishes
+   an Activity Streams `OrderedCollection` (~21,731 items), verified live.
+   Gallica: still unverified. `collection` adapter remains the guaranteed
+   path; both adapters are built.
+3. **Image API quirks.** Not every institution implements the Image API;
+   some serve only static images. Need the bare-URL fallback and
+   content-type checking (per the reference tool).
 
 ## 6. Suggested first build slice
 
@@ -128,12 +181,23 @@ carries the most risk.
 
 ## 7. Open / deferred
 
-- Working name for the project/binary.
-- Confirm Change Discovery API availability for Gallica and Digital Bodleian.
-- Choice of vendored viewer (OpenSeadragon vs. Triiiceratops vs. Mirador).
-- Static vs. selectable tile parameters (levels/tile size) per collection.
-- Review-queue UX (CLI list + approve, or a small served page). Now on the
+- **Done since last revision** (were roadmap): embedded Mirador 4 viewer;
+  local IIIF level0 tile pyramids + deep zoom; tolerant *version-agnostic*
+  metadata extraction (object-valued v2/v3 labels no longer drop manifests);
+  `-store`/config/`-manifest`/`-dry-run`; institution-nested library.
+- **Re-tile existing bundles:** a bundle preserved *before* tiling is not
+  re-tiled on idempotent re-run (skip branch only checks the flat jpg).
+- **Manual check only:** confirming Mirador's in-browser zoom UI cannot be
+  automated here; everything up to the served tiles/info.json is tested.
+- Review-queue UX (CLI list + approve, or a small served page). On the
   critical path — see the §4.2 implementation note.
+- Free-text-embedded dates: deferred parser gap (needs false-positive-rate
+  decision) that still costs some filter recall.
+- Preservation dogfooded against Bodleian + the IIIF Cookbook (v3); Gallica
+  image fetch (13s/host spacing) not yet exercised end-to-end.
+- Working name for the project/binary; module path
+  (`github.com/sarahmaeve/go-iiif` vs. a short bare path) — raised, undecided.
+- Confirm Change Discovery availability for Gallica (Bodleian: confirmed).
 
 ## 8. Implementation status
 
@@ -146,22 +210,40 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Language → ISO-639 normalizer (8 langs: name/endonym/639-2) | ✅ done | `internal/metadata` |
 | `WorkRecord` builder + per-institution `FieldMapping` | ✅ done | `internal/metadata` |
 | Conservative `match`/`uncertain`/`no-match` filter (lang/date/origin) | ✅ done | `internal/metadata` |
-| IIIF v2 metadata extraction | ✅ done | `internal/metadata` |
+| Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
 | HTTPS `Fetcher` (HTTPS-only, browser UA, status mapping) | ✅ done | `internal/source` |
 | Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff, conditional GET, content-hash dedup, resumable journal | ✅ done | `internal/source` |
 | End-to-end classification pipeline | ✅ done | `internal/pipeline` |
+| Concurrent pipeline fan-out (opt-in `Workers`; per-host politeness preserved; live multi-host verified) | ✅ done | `internal/pipeline` |
 | CLI entrypoint | ✅ done (provisional name) | `cmd/iiifpreserve` |
-| Live validation vs. Gallica + Bodleian (manifests, recursive walk, full run) | ✅ done | `*_test.go` `//go:build integration` |
-| `changestream` Source adapter (IIIF Change Discovery) | ⬜ not started | DESIGN §4.1 |
+| Live validation vs. Gallica + Bodleian (manifests, recursive walk, full run, concurrent multi-host) | ✅ done | `*_test.go` `//go:build integration` |
+| `changestream` Source adapter (IIIF Change Discovery) | ✅ done | `internal/source` |
 | IIIF **v3** collections (`items`) + v2 mixed `members` | ✅ done | `internal/source` |
-| Non-string v2 metadata values (localized `@value`/`@language`) | ⬜ deferred | DESIGN §4.2 |
+| Per-host `RatePolicy` (built-in Gallica 13s throttle) | ✅ done | `internal/source` |
+| Canvas image enumeration (v2 + v3) | ✅ done | `internal/preserve` |
+| Largest-image fetch (`/full/max`→`/full/full`→bare) | ✅ done | `internal/preserve` |
+| `Preserve`: store JPEGs + manifest + provenance; idempotent; per-image fault-tolerant | ✅ done | `internal/preserve` |
+| `BlobStore` (`local`, atomic writes) | ✅ done | `internal/preserve` |
+| `pipeline.Result` carries manifest bytes; storage root `-store` > config (`store=`) > `~/iiif-images`; `-dry-run` classify-only | ✅ done | `cmd/iiifpreserve` |
+| Single-resource downloader `-manifest <url>` (polite Go fetcher, skips filter; replaces curl) | ✅ done | `cmd/iiifpreserve` |
+| Institution-nested library layout `<root>/<host>/<slug>/` (`dirFor`) | ✅ done | `internal/preserve` |
+| Non-string v2 / object-valued v3 metadata values | ✅ done (`normalizeIIIFText`) | `internal/metadata` |
 | Free-text-embedded dates | ⬜ deferred (needs false-positive-rate decision) | DESIGN §4.2 |
-| Image fetch → keep max-permitted source → level-0 tiling | ⬜ not started | DESIGN §3, §4.3/§4.4 |
-| `BlobStore` (`local` + `s3-compatible`) + URL rewriting | ⬜ not started | DESIGN §4.4 |
-| Static serving + embedded viewer bundle | ⬜ not started | DESIGN §3, §2 |
-| Review-queue UX | ⬜ not started (now critical path, see §4.2 note) | DESIGN §7 |
+| Static HTTPS server over `BlobStore` (mkcert cert, `-no-tls`, graceful) | ✅ done | `internal/serve` |
+| Serve-time manifest rewrite (provenance-driven, v2+v3; re-points to local Image API service when tiled, else strips) | ✅ done | `internal/serve` |
+| Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
+| **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
+| Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
+| Live dogfood: `-manifest` Cookbook v3 + real Bodleian → tiled preserve → serve → localized + re-pointed + deep tile | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
+| Re-tile bundles preserved before tiling existed | ⬜ deferred (idempotent skip only checks flat jpg) | DESIGN §7 |
+| Review-queue UX | ⬜ not started (critical path, see §4.2 note) | DESIGN §7 |
 
-The §6 first build slice (collection adapter + normalizer + filter, live-validated,
-test-first on the parsers) is complete. The pipeline currently classifies and
-routes; everything from `[match]` onward in the §3 diagram is unbuilt.
+The binary runs the full `acquire → select → preserve → serve → view →
+deep-zoom` path live (one binary, real institution or single `-manifest`:
+filtered, polite, institution-nested on-disk copy with provenance and local
+IIIF tile pyramids, served over HTTPS with the manifest re-pointed at local
+images + a local Image API service, viewed in an embedded Mirador 4). The
+remaining high-value gaps gate whether the *right* items get preserved:
+the review-queue UX and the free-text-date parser (§4.2), plus re-tiling
+pre-tiling bundles. Project status is tracked here, not in assistant memory.

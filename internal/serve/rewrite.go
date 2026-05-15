@@ -13,7 +13,16 @@ type provenanceDoc struct {
 		File      string `json:"file"`
 		ServiceID string `json:"service_id"`
 		SourceURL string `json:"source_url"`
+		TileDir   string `json:"tile_dir,omitempty"`
 	} `json:"images"`
+}
+
+// localTarget is where a preserved image is re-pointed: the flat JPEG URL,
+// and (when a level0 pyramid was built) the local Image API service base
+// that gives the viewer deep zoom.
+type localTarget struct {
+	imageURL   string
+	serviceURL string // "" when no local pyramid → service is stripped
 }
 
 // rewriteManifest returns the manifest with every preserved image's resource
@@ -28,15 +37,19 @@ func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
 	if err := json.Unmarshal(provenance, &prov); err != nil {
 		return nil, fmt.Errorf("serve: decoding provenance: %w", err)
 	}
-	// anchor (original image-server URL prefix) → local URL.
-	local := make(map[string]string, len(prov.Images))
+	// anchor (original image-server URL prefix) → local target.
+	local := make(map[string]localTarget, len(prov.Images))
 	for _, img := range prov.Images {
-		localURL := strings.TrimRight(base, "/") + "/" + img.File
+		b := strings.TrimRight(base, "/")
+		t := localTarget{imageURL: b + "/" + img.File}
+		if img.TileDir != "" {
+			t.serviceURL = b + "/" + img.TileDir
+		}
 		if img.ServiceID != "" {
-			local[img.ServiceID] = localURL
+			local[img.ServiceID] = t
 		}
 		if img.SourceURL != "" {
-			local[img.SourceURL] = localURL
+			local[img.SourceURL] = t
 		}
 	}
 
@@ -53,15 +66,15 @@ func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
 	return out, nil
 }
 
-// matchLocal returns the local URL for an id/service string that begins with
-// a recorded original anchor, or "" if none.
-func matchLocal(s string, local map[string]string) string {
-	for anchor, localURL := range local {
+// matchLocal returns the local target for an id/service string that begins
+// with a recorded original anchor, and whether one matched.
+func matchLocal(s string, local map[string]localTarget) (localTarget, bool) {
+	for anchor, t := range local {
 		if s == anchor || strings.HasPrefix(s, anchor) {
-			return localURL
+			return t, true
 		}
 	}
-	return ""
+	return localTarget{}, false
 }
 
 func nodeID(m map[string]any) (key, val string) {
@@ -96,23 +109,33 @@ func serviceAnchor(svc any) string {
 // rewriteNode walks the decoded manifest. An object is treated as a preserved
 // image resource when its own id, or its service's id, begins with a recorded
 // original URL; that object is then localized in place.
-func rewriteNode(n any, local map[string]string) {
+func rewriteNode(n any, local map[string]localTarget) {
 	switch v := n.(type) {
 	case map[string]any:
 		idKey, idVal := nodeID(v)
-		hit := ""
+		var t localTarget
+		var ok bool
 		if idVal != "" {
-			hit = matchLocal(idVal, local)
+			t, ok = matchLocal(idVal, local)
 		}
-		if hit == "" {
+		if !ok {
 			if a := serviceAnchor(v["service"]); a != "" {
-				hit = matchLocal(a, local)
+				t, ok = matchLocal(a, local)
 			}
 		}
-		if hit != "" && idKey != "" {
-			v[idKey] = hit
+		if ok && idKey != "" {
+			v[idKey] = t.imageURL
 			v["format"] = "image/jpeg"
-			delete(v, "service")
+			if t.serviceURL != "" {
+				// Re-point at the local level0 pyramid for deep zoom.
+				v["service"] = []any{map[string]any{
+					"id":      t.serviceURL,
+					"type":    "ImageService3",
+					"profile": "level0",
+				}}
+			} else {
+				delete(v, "service") // no local pyramid: flat JPEG only
+			}
 			return // localized; don't descend further into it
 		}
 		for _, child := range v {

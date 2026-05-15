@@ -6,6 +6,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +47,9 @@ func (s *Server) Handler() http.Handler {
 		case strings.HasSuffix(clean, "/manifest.json"):
 			s.serveManifest(w, r, files)
 			return
+		case strings.HasSuffix(clean, "/info.json"):
+			s.serveInfoJSON(w, r, files)
+			return
 		}
 		// A "/<dir>/" request for a preserved manifest renders the embedded
 		// Mirador viewer instead of the stdlib directory listing.
@@ -57,6 +61,45 @@ func (s *Server) Handler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// serveInfoJSON serves a stored level0 info.json with its `id` set to the
+// request URL base. IIIF requires info.json `id` to equal the URL it is
+// served from; the stored file holds a placeholder (the host is unknown at
+// preserve time). Falls back to the raw file on any error.
+func (s *Server) serveInfoJSON(w http.ResponseWriter, r *http.Request, files http.Handler) {
+	dir := http.Dir(s.root)
+	clean := path.Clean(r.URL.Path)
+
+	f, err := dir.Open(clean)
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+	raw, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	doc["id"] = scheme + "://" + r.Host + strings.TrimSuffix(clean, "/info.json")
+	out, err := json.Marshal(doc)
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
 // serveManifest serves the preserved manifest with image URLs rewritten to

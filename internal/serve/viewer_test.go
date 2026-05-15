@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,43 @@ func writeNestedBundle(t *testing.T) string {
 		}
 	}
 	return root
+}
+
+// IIIF requires an Image API info.json `id` to equal the URL it is served
+// from. The stored file has a placeholder, so serve must rewrite it.
+func TestServer_InfoJSONIDRewrittenToRequestURL(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "inst", "slug", "0001")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	stored := `{"@context":"http://iiif.io/api/image/3/context.json",` +
+		`"id":"PLACEHOLDER","type":"ImageService3","profile":"level0","width":8,"height":8}`
+	if err := os.WriteFile(filepath.Join(dir, "info.json"), []byte(stored), 0o600); err != nil {
+		t.Fatalf("write info.json: %v", err)
+	}
+
+	ts := httptest.NewServer(New(root).Handler())
+	defer ts.Close()
+
+	code, body, ct := viewerGet(t, ts, "/inst/slug/0001/info.json")
+	if code != 200 {
+		t.Fatalf("GET info.json = %d", code)
+	}
+	if !strings.Contains(ct, "json") {
+		t.Fatalf("info.json content-type = %q", ct)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("info.json invalid: %v\n%s", err, body)
+	}
+	want := ts.URL + "/inst/slug/0001"
+	if got["id"] != want {
+		t.Fatalf("info.json id = %v, want %s (the request URL base)", got["id"], want)
+	}
+	if got["profile"] != "level0" || got["type"] != "ImageService3" {
+		t.Fatalf("other info.json fields not preserved: %v", got)
+	}
 }
 
 // TestServer_NestedInstitutionLayout: with <host>/<slug>/ nesting the index

@@ -17,8 +17,13 @@ type Summary struct {
 	Images      int    // canvas images found
 	Stored      int    // images newly fetched and stored
 	Skipped     int    // images already present (idempotent re-run)
+	Tiled       int    // images for which a level0 tile pyramid was built
 	Failures    []string
 }
+
+// defaultTileSize is the level0 tile edge. 512 balances file count against
+// zoom granularity and matches the common OpenSeadragon/Mirador default.
+const defaultTileSize = 512
 
 type provenance struct {
 	ManifestURL string          `json:"manifest_url"`
@@ -30,6 +35,7 @@ type provenanceImg struct {
 	File      string `json:"file"`
 	ServiceID string `json:"service_id"`
 	SourceURL string `json:"source_url"`
+	TileDir   string `json:"tile_dir,omitempty"` // level0 pyramid prefix, if built
 }
 
 var unsafeKeyChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -88,7 +94,13 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		}
 		if exists {
 			sum.Skipped++
-			prov.Images = append(prov.Images, provenanceImg{File: file, ServiceID: img.ServiceID})
+			entry := provenanceImg{File: file, ServiceID: img.ServiceID}
+			prefix := fmt.Sprintf("%04d", i+1)
+			if ok, _ := store.Exists(ctx, dir+"/"+prefix+"/info.json"); ok {
+				sum.Tiled++
+				entry.TileDir = prefix
+			}
+			prov.Images = append(prov.Images, entry)
 			continue
 		}
 
@@ -102,7 +114,16 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			continue
 		}
 		sum.Stored++
-		prov.Images = append(prov.Images, provenanceImg{File: file, ServiceID: img.ServiceID, SourceURL: used})
+		entry := provenanceImg{File: file, ServiceID: img.ServiceID, SourceURL: used}
+		// Best-effort level0 pyramid for deep zoom. An undecodable image
+		// (or render error) leaves only the flat jpg — the serve-time
+		// rewrite falls back gracefully.
+		prefix := fmt.Sprintf("%04d", i+1)
+		if _, terr := renderTilePyramid(ctx, store, dir+"/"+prefix, data, defaultTileSize); terr == nil {
+			sum.Tiled++
+			entry.TileDir = prefix
+		}
+		prov.Images = append(prov.Images, entry)
 	}
 
 	provJSON, err := json.MarshalIndent(prov, "", "  ")

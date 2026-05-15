@@ -8,6 +8,49 @@ import (
 	"testing"
 )
 
+// When provenance records a tile_dir, the rewrite must RE-POINT the image
+// at the local level0 pyramid (deep zoom) instead of stripping the service.
+func TestRewriteManifest_RepointsToLocalTileService(t *testing.T) {
+	manifest := []byte(`{
+	  "items":[{"items":[{"items":[{"body":{
+	    "id":"https://remote.example/iiif/abc/full/max/0/default.jpg",
+	    "type":"Image",
+	    "service":[{"id":"https://remote.example/iiif/abc","type":"ImageService3"}]
+	  }}]}]}]
+	}`)
+	prov := []byte(`{"images":[{"file":"0001.jpg",` +
+		`"service_id":"https://remote.example/iiif/abc",` +
+		`"source_url":"https://remote.example/iiif/abc/full/max/0/default.jpg",` +
+		`"tile_dir":"0001"}]}`)
+	base := "https://h/inst/slug"
+
+	out, err := rewriteManifest(manifest, prov, base)
+	if err != nil {
+		t.Fatalf("rewriteManifest: %v", err)
+	}
+	if strings.Contains(string(out), "remote.example") {
+		t.Fatalf("original remote URLs still present:\n%s", out)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("rewritten manifest invalid: %v", err)
+	}
+	body := doc["items"].([]any)[0].(map[string]any)["items"].([]any)[0].(map[string]any)["items"].([]any)[0].(map[string]any)["body"].(map[string]any)
+
+	if body["id"] != base+"/0001.jpg" {
+		t.Fatalf("body id = %v, want %s/0001.jpg", body["id"], base)
+	}
+	svc, ok := body["service"].([]any)
+	if !ok || len(svc) != 1 {
+		t.Fatalf("body.service = %v, want a 1-element array (deep-zoom service kept)", body["service"])
+	}
+	s := svc[0].(map[string]any)
+	if s["id"] != base+"/0001" || s["type"] != "ImageService3" || s["profile"] != "level0" {
+		t.Fatalf("local service = %v, want id %s/0001 ImageService3 level0", s, base)
+	}
+}
+
 func TestRewriteManifest_RealV3Cookbook(t *testing.T) {
 	dir := filepath.Join("testdata", "bundle", "cookbook-v3")
 	manifest, err := os.ReadFile(filepath.Join(dir, "manifest.json"))

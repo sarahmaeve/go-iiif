@@ -108,3 +108,58 @@ func TestPreserve_IdempotentSkipsExisting(t *testing.T) {
 		t.Fatalf("re-run summary = %+v, want 0 stored, 1 skipped (idempotent)", sum)
 	}
 }
+
+// realJPEG serves a decodable 600x400 image for any image URL (so tiling
+// runs), and the manifest for the manifest URL.
+type realJPEG struct {
+	manifestURL, manifest string
+	img                   []byte
+}
+
+func (f realJPEG) Fetch(_ context.Context, url string) ([]byte, error) {
+	if url == f.manifestURL {
+		return []byte(f.manifest), nil
+	}
+	return f.img, nil
+}
+
+func TestPreserve_RendersTilePyramid(t *testing.T) {
+	manifestBytes := readManifest(t, "bodleian_f317ad0c.json")
+	const manifestURL = "https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c.json"
+	root := t.TempDir()
+	store := NewLocalBlobStore(root)
+	fetcher := realJPEG{manifestURL: manifestURL, manifest: string(manifestBytes), img: synthJPEG(t, 600, 400)}
+
+	sum, err := Preserve(context.Background(), fetcher, store, manifestURL, manifestBytes)
+	if err != nil {
+		t.Fatalf("Preserve: %v", err)
+	}
+	if sum.Stored != 1 || sum.Tiled != 1 || len(sum.Failures) != 0 {
+		t.Fatalf("summary = %+v, want 1 stored, 1 tiled, no failures", sum)
+	}
+
+	// The level0 pyramid sits beside the flat jpg, under the image's prefix.
+	if _, err := os.Stat(filepath.Join(root, sum.Dir, "0001", "info.json")); err != nil {
+		t.Fatalf("tile info.json not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, sum.Dir, "0001.jpg")); err != nil {
+		t.Fatalf("flat jpg should still exist alongside tiles: %v", err)
+	}
+
+	prov, err := os.ReadFile(filepath.Join(root, sum.Dir, "provenance.json"))
+	if err != nil {
+		t.Fatalf("reading provenance: %v", err)
+	}
+	var p struct {
+		Images []struct {
+			File    string `json:"file"`
+			TileDir string `json:"tile_dir"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal(prov, &p); err != nil {
+		t.Fatalf("provenance JSON: %v", err)
+	}
+	if len(p.Images) != 1 || p.Images[0].TileDir != "0001" {
+		t.Fatalf("provenance images = %+v, want tile_dir 0001", p.Images)
+	}
+}
