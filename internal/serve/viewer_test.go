@@ -337,3 +337,23 @@ func TestServer_ViewerActivatesAnnotationsPanel(t *testing.T) {
 		}
 	}
 }
+
+// Mirador's default osdConfig.preserveViewport is true: on canvas switch it
+// keeps the previous canvas's OSD viewport instead of re-homing. For a
+// manuscript whose pages differ in size/orientation (e.g. Bodleian's mixed
+// portrait/landscape leaves), every canvas after the first then renders
+// into the first canvas's world bounds — a partial image. The viewer must
+// disable viewport preservation so OSD re-homes per canvas.
+func TestServer_ViewerDisablesViewportPreservation(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	code, body, _ := viewerGet(t, ts, "/cookbook-v3/")
+	if code != http.StatusOK {
+		t.Fatalf("GET /cookbook-v3/ = %d, want 200", code)
+	}
+	if !strings.Contains(body, "osdConfig") || !strings.Contains(body, "preserveViewport: false") {
+		t.Fatalf("viewer does not disable OSD viewport preservation "+
+			"(expected osdConfig.preserveViewport: false); body=%s", body)
+	}
+}

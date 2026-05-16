@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/annotation"
@@ -27,6 +29,40 @@ type provenanceDoc struct {
 type localTarget struct {
 	imageURL   string
 	serviceURL string // "" when no local pyramid → service is stripped
+	// w, h are the locally stored pixel dimensions read from the level0
+	// info.json. They differ from the manifest's declared size when the
+	// source server downscaled on the way in (e.g. Bodleian caps
+	// /full/max/ at 4000px on the long edge). Zero when unknown.
+	w, h int
+}
+
+// localInfoDims reads the width/height a level0 pyramid was actually built
+// at from <bundleDir>/<tileDir>/info.json. Returns (0,0) on any problem —
+// dimension correction is best-effort and must never break serving.
+func localInfoDims(bundleDir, tileDir string) (w, h int) {
+	if bundleDir == "" || tileDir == "" {
+		return 0, 0
+	}
+	// tileDir comes from the bundle's own provenance.json; still, confine it
+	// to a single in-bundle path segment so a crafted value cannot escape
+	// bundleDir via ".." or an absolute path.
+	if tileDir != filepath.Base(tileDir) || tileDir == ".." || filepath.IsAbs(tileDir) {
+		return 0, 0
+	}
+	//nolint:gosec // G304: tileDir is constrained above to a single
+	// non-traversing segment under the trusted bundle directory.
+	raw, err := os.ReadFile(filepath.Join(bundleDir, tileDir, "info.json"))
+	if err != nil {
+		return 0, 0
+	}
+	var d struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	}
+	if json.Unmarshal(raw, &d) != nil {
+		return 0, 0
+	}
+	return d.Width, d.Height
 }
 
 // rewriteManifest returns the manifest with every preserved image's resource
@@ -36,7 +72,7 @@ type localTarget struct {
 // and structure-agnostic: it matches image nodes by the recorded original
 // URLs, so it works for Presentation 2.x and 3.0 without knowing either
 // shape. Non-image JSON is preserved (key order is not — viewers don't care).
-func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
+func rewriteManifest(manifest, provenance []byte, base, bundleDir string) ([]byte, error) {
 	var prov provenanceDoc
 	if err := json.Unmarshal(provenance, &prov); err != nil {
 		return nil, fmt.Errorf("serve: decoding provenance: %w", err)
@@ -48,6 +84,7 @@ func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
 		t := localTarget{imageURL: b + "/" + img.File}
 		if img.TileDir != "" {
 			t.serviceURL = b + "/" + img.TileDir
+			t.w, t.h = localInfoDims(bundleDir, img.TileDir)
 		}
 		if img.ServiceID != "" {
 			local[img.ServiceID] = t
@@ -61,7 +98,7 @@ func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
 	if err := json.Unmarshal(manifest, &doc); err != nil {
 		return nil, fmt.Errorf("serve: decoding manifest: %w", err)
 	}
-	rewriteNode(doc, local)
+	rewriteNode(doc, nil, local)
 	stripRemoteThumbnails(doc, strings.TrimRight(base, "/"))
 
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -240,10 +277,25 @@ func serviceAnchor(svc any) string {
 	return ""
 }
 
-// rewriteNode walks the decoded manifest. An object is treated as a preserved
-// image resource when its own id, or its service's id, begins with a recorded
-// original URL; that object is then localized in place.
-func rewriteNode(n any, local map[string]localTarget) {
+// setDims overwrites width/height on a node when dims are known (>0),
+// keeping the manifest's declared size in step with the locally stored
+// pixels. Without this, a level0 deep-zoom source is asked for tiles at
+// coordinates that were never generated and only a sub-region renders.
+func setDims(m map[string]any, w, h int) {
+	if m == nil || w <= 0 || h <= 0 {
+		return
+	}
+	m["width"] = w
+	m["height"] = h
+}
+
+// rewriteNode walks the decoded manifest, tracking the nearest enclosing
+// Canvas. An object is treated as a preserved image resource when its own
+// id, or its service's id, begins with a recorded original URL; that object
+// is then localized in place. When it is re-pointed at a local level0
+// pyramid, the resource's and the enclosing Canvas's width/height are
+// corrected to the locally stored pixel size.
+func rewriteNode(n any, canvas map[string]any, local map[string]localTarget) {
 	switch v := n.(type) {
 	case map[string]any:
 		idKey, idVal := nodeID(v)
@@ -267,17 +319,25 @@ func rewriteNode(n any, local map[string]localTarget) {
 					"type":    "ImageService3",
 					"profile": "level0",
 				}}
+				// Correct the manifest's declared size to the pixels we
+				// actually stored, on both the image resource and its
+				// Canvas, so the level0 tile grid lines up.
+				setDims(v, t.w, t.h)
+				setDims(canvas, t.w, t.h)
 			} else {
 				delete(v, "service") // no local pyramid: flat JPEG only
 			}
 			return // localized; don't descend further into it
 		}
+		if isCanvas(v) {
+			canvas = v
+		}
 		for _, child := range v {
-			rewriteNode(child, local)
+			rewriteNode(child, canvas, local)
 		}
 	case []any:
 		for _, e := range v {
-			rewriteNode(e, local)
+			rewriteNode(e, canvas, local)
 		}
 	}
 }

@@ -27,7 +27,7 @@ func TestRewriteManifest_DropsRemoteThumbnails(t *testing.T) {
 		`"source_url":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1/full/full/0/native.jpg",` +
 		`"tile_dir":"0001"}]}`)
 
-	out, err := rewriteManifest(manifest, prov, "https://h/inst/slug")
+	out, err := rewriteManifest(manifest, prov, "https://h/inst/slug", "")
 	if err != nil {
 		t.Fatalf("rewriteManifest: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRewriteManifest_RepointsToLocalTileService(t *testing.T) {
 		`"tile_dir":"0001"}]}`)
 	base := "https://h/inst/slug"
 
-	out, err := rewriteManifest(manifest, prov, base)
+	out, err := rewriteManifest(manifest, prov, base, "")
 	if err != nil {
 		t.Fatalf("rewriteManifest: %v", err)
 	}
@@ -84,6 +84,70 @@ func TestRewriteManifest_RepointsToLocalTileService(t *testing.T) {
 	}
 }
 
+// When an image is re-pointed at the local level0 pyramid, the manifest's
+// Canvas and image-resource width/height must be corrected to the locally
+// stored pixel size (the source server may have downscaled on the way in,
+// e.g. Bodleian caps /full/max/ at 4000px). A stale, larger dimension makes
+// a level0 deep-zoom source request tiles that were never generated, so
+// only a sub-region of every page renders.
+func TestRewriteManifest_CorrectsDimsToLocalInfoJSON(t *testing.T) {
+	bundleDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(bundleDir, "0001"), 0o755); err != nil {
+		t.Fatalf("mkdir tile dir: %v", err)
+	}
+	info := []byte(`{"@context":"http://iiif.io/api/image/3/context.json",
+	  "type":"ImageService3","profile":"level0","width":2644,"height":4000}`)
+	if err := os.WriteFile(filepath.Join(bundleDir, "0001", "info.json"), info, 0o644); err != nil {
+		t.Fatalf("write info.json: %v", err)
+	}
+
+	manifest := []byte(`{
+	  "sequences":[{"canvases":[{
+	    "@type":"sc:Canvas","width":2737,"height":4140,
+	    "images":[{"resource":{
+	      "@id":"https://remote.example/iiif/abc/full/max/0/default.jpg",
+	      "width":2737,"height":4140,
+	      "service":{"@id":"https://remote.example/iiif/abc"}
+	    }}]
+	  }]}]
+	}`)
+	prov := []byte(`{"images":[{"file":"0001.jpg",` +
+		`"service_id":"https://remote.example/iiif/abc",` +
+		`"source_url":"https://remote.example/iiif/abc/full/max/0/default.jpg",` +
+		`"tile_dir":"0001"}]}`)
+	base := "https://h/inst/slug"
+
+	out, err := rewriteManifest(manifest, prov, base, bundleDir)
+	if err != nil {
+		t.Fatalf("rewriteManifest: %v", err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("rewritten manifest invalid: %v", err)
+	}
+	canvas := doc["sequences"].([]any)[0].(map[string]any)["canvases"].([]any)[0].(map[string]any)
+	res := canvas["images"].([]any)[0].(map[string]any)["resource"].(map[string]any)
+
+	if w, _ := res["width"].(float64); w != 2644 {
+		t.Errorf("resource width = %v, want 2644 (local info.json)", res["width"])
+	}
+	if h, _ := res["height"].(float64); h != 4000 {
+		t.Errorf("resource height = %v, want 4000 (local info.json)", res["height"])
+	}
+	if w, _ := canvas["width"].(float64); w != 2644 {
+		t.Errorf("canvas width = %v, want 2644 (local info.json)", canvas["width"])
+	}
+	if h, _ := canvas["height"].(float64); h != 4000 {
+		t.Errorf("canvas height = %v, want 4000 (local info.json)", canvas["height"])
+	}
+	// And the deep-zoom service must still be re-pointed locally.
+	svc, ok := res["service"].([]any)
+	if !ok || len(svc) != 1 || svc[0].(map[string]any)["id"] != base+"/0001" {
+		t.Fatalf("local level0 service not set: %v", res["service"])
+	}
+}
+
 func TestRewriteManifest_RealV3Cookbook(t *testing.T) {
 	dir := filepath.Join("testdata", "bundle", "cookbook-v3")
 	manifest, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
@@ -101,7 +165,7 @@ func TestRewriteManifest_RealV3Cookbook(t *testing.T) {
 		wantImg = "https://archive.local/cookbook-v3/0001.jpg"
 	)
 
-	out, err := rewriteManifest(manifest, prov, base)
+	out, err := rewriteManifest(manifest, prov, base, dir)
 	if err != nil {
 		t.Fatalf("rewriteManifest: %v", err)
 	}
@@ -150,7 +214,7 @@ func TestRewriteManifest_RealBodleian(t *testing.T) {
 		wantImg   = "https://archive.local/bodleian-c481/0001.jpg"
 	)
 
-	out, err := rewriteManifest(manifest, prov, base)
+	out, err := rewriteManifest(manifest, prov, base, dir)
 	if err != nil {
 		t.Fatalf("rewriteManifest: %v", err)
 	}

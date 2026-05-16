@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -99,6 +100,39 @@ func TestServer_RewritesServedManifest(t *testing.T) {
 	p, _ := io.ReadAll(resp2.Body)
 	if !strings.Contains(string(p), origService) {
 		t.Fatalf("provenance.json should be served untouched (still hold the original URL)")
+	}
+}
+
+func TestServer_LogRequestsRecordsStatus(t *testing.T) {
+	root := writeBundle(t)
+	var buf strings.Builder
+	srv := New(root)
+	srv.logf = func(format string, args ...any) {
+		buf.WriteString(strings.TrimRight(fmt.Sprintf(format, args...), "\n") + "\n")
+	}
+	ts := httptest.NewServer(srv.logRequests(srv.Handler()))
+	defer ts.Close()
+
+	do := func(path string) {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	do("/example.org_iiif_m/0001.jpg")
+	do("/example.org_iiif_m/missing.json")
+
+	out := buf.String()
+	if !strings.Contains(out, "GET 200 /example.org_iiif_m/0001.jpg") {
+		t.Errorf("log missing 200 line; got:\n%s", out)
+	}
+	if !strings.Contains(out, "GET 404 /example.org_iiif_m/missing.json") {
+		t.Errorf("log missing 404 line; got:\n%s", out)
 	}
 }
 

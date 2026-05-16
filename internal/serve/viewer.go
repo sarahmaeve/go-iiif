@@ -203,6 +203,14 @@ aside.library a[aria-current]{color:var(--accent);background:var(--surface);
 <script>
   Mirador.viewer({
     id: 'mirador',
+    /* Mirador's default osdConfig.preserveViewport is true, so SET_CANVAS
+       keeps the previous canvas's OSD viewport and OSD only goHome()s on
+       first open. A manuscript with mixed page sizes/orientations (e.g.
+       Bodleian's portrait+landscape leaves) then renders every canvas
+       after the first into canvas 1's world bounds — a partial image.
+       Disable it so OSD re-homes per canvas. Verified against the
+       vendored bundle (top-level config key, sibling of window). */
+    osdConfig: { preserveViewport: false },
     /* Mirador 4 loads referenced annotations but, by default, keeps the
        sidebar closed and on-canvas highlights off — a stored note then
        has nowhere to surface. Activate the annotations companion

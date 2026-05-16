@@ -12,8 +12,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -27,11 +29,43 @@ import (
 type Server struct {
 	root   string
 	server *http.Server
+	// logf, when set, receives one line per HTTP request as
+	// "METHOD STATUS PATH" (printf-style). Used to diagnose what a viewer
+	// actually requests against the rewritten manifest / tile pyramid.
+	logf func(format string, args ...any)
 }
 
-// New returns a Server rooted at the preserved-bundle directory.
+// New returns a Server rooted at the preserved-bundle directory, logging
+// one line per request to stderr.
 func New(root string) *Server {
-	return &Server{root: root}
+	lg := log.New(os.Stderr, "iiifserve ", log.LstdFlags)
+	return &Server{root: root, logf: lg.Printf}
+}
+
+// statusRecorder captures the response status so it can be logged. It
+// defaults to 200 — the status implied when a handler writes a body
+// without an explicit WriteHeader.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// logRequests wraps next, emitting "METHOD STATUS PATH" via s.logf after
+// each request. A no-op wrapper when logf is nil.
+func (s *Server) logRequests(next http.Handler) http.Handler {
+	if s.logf == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		s.logf("%s %d %s", r.Method, rec.status, r.URL.Path)
+	})
 }
 
 // Handler serves the preserved tree as static files, except a
@@ -303,7 +337,8 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 	if pf, perr := dir.Open(path.Join(path.Dir(clean), "provenance.json")); perr == nil {
 		prov, _ := io.ReadAll(pf)
 		_ = pf.Close()
-		if rw, rerr := rewriteManifest(manifest, prov, base); rerr == nil {
+		bundleDir := filepath.Join(s.root, filepath.FromSlash(path.Dir(clean)))
+		if rw, rerr := rewriteManifest(manifest, prov, base, bundleDir); rerr == nil {
 			out = rw
 		}
 	}
@@ -337,7 +372,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr, certFile, keyFile str
 // Returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener, certFile, keyFile string) error {
 	s.server = &http.Server{
-		Handler:           s.Handler(),
+		Handler:           s.logRequests(s.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
