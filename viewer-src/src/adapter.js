@@ -8,11 +8,20 @@
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 export default class HttpAnnotationAdapter {
-  constructor(endpoint, canvasId) {
+  constructor(endpoint, canvasId, user = 'Anonymous') {
     this.endpoint = endpoint; // absolute /<dir>/annotations URL
     this.canvasId = canvasId;
+    this.user = user;
     // MAE keys annotations per canvas; our GET filters with ?canvas=.
     this.annotationPageId = `${endpoint}?canvas=${encodeURIComponent(canvasId)}`;
+  }
+
+  // MAE's save flow reads the author from the adapter (sets
+  // annotation.creator). The reference LocalStorageAdapter exposes this;
+  // omitting it threw "getStorageAdapterUser is not a function" and aborted
+  // the save before any request. Single-user offline tool → a fixed label.
+  getStorageAdapterUser() {
+    return this.user;
   }
 
   async all() {

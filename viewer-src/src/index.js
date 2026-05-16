@@ -26,8 +26,17 @@ if (typeof document !== 'undefined' && !document.querySelector('style[data-mae]'
 }
 
 // The annotation REST surface is served at /<dir>/annotations, a sibling of
-// the viewer page — resolve it relative to the document, never templated in.
+// the viewer page. Derive it from the #mirador div's data-manifest
+// (an absolute "/<dir>/manifest.json" the Go template already emits) so
+// it is correct regardless of whether the page was opened with a trailing
+// slash; fall back to document-relative resolution. Never templated into
+// JS (the path comes from a DOM data-attribute).
 function annotationEndpoint() {
+  const el = document.getElementById('mirador');
+  const mf = el && el.dataset && el.dataset.manifest;
+  if (mf) {
+    return new URL(mf.replace(/manifest\.json$/, 'annotations'), document.baseURI).href;
+  }
   return new URL('annotations', document.baseURI).href;
 }
 
