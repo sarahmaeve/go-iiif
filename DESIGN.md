@@ -204,6 +204,17 @@ carries the most risk.
   tiles/info.json is also automated-test covered.
 - Free-text-embedded dates: deferred parser gap (needs false-positive-rate
   decision) that still costs some filter recall.
+- **Per-institution field mapping**: e-codices labels (`Text Language`,
+  `Date of Origin (English)`, `Place of Origin (English)`, `Century`)
+  aren't in the default mapping, so a *filtered crawl* of e-codices won't
+  constrain on lang/date (lenient filter keeps items, doesn't drop them).
+  Direct `-manifest` is unaffected. Motivates the deferred per-institution
+  `FieldMapping` config; verified sources are listed in `VERIFIED.md`.
+- **Out of polite scope:** Library of Congress (`www.loc.gov`) fronts its
+  IIIF with Akamai-class edge protection that 403s programmatic clients
+  regardless of User-Agent (browser-spoof also 403s; even WebFetch 403s).
+  Passing it would require evasive fingerprinting — the arms race the
+  honest-UA stance deliberately refuses. Recorded, not pursued.
 - Preservation dogfooded end-to-end against **Bodleian**, the **IIIF
   Cookbook** (v3), and **Gallica/BnF** (single-image estampe
   `btv1b9055204k`: ~39s honouring the 13s/host throttle → tiled, served,
@@ -272,7 +283,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
-| Live dogfood: `-manifest` Cookbook v3 + real Bodleian + Gallica/BnF estampe + **25-page Gallica manuscript** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified (re-run 0.56s, all skipped) | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
+| Live dogfood: `-manifest` Cookbook v3 + Bodleian + Gallica estampe + 25-page Gallica ms + **e-codices Basel F III 15d (44 ff.)** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified. Verified sources tracked in `VERIFIED.md` | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
 | Re-tile bundles preserved before tiling existed | ⬜ deferred (idempotent skip only checks flat jpg) | DESIGN §7 |
 The binary runs the full `acquire → select → preserve → serve → view →
 deep-zoom` path live (one binary, real institution or single `-manifest`:
