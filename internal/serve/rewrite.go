@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/sarahmaeve/go-iiif/internal/annotation"
 )
 
 // provenanceDoc mirrors the subset of internal/preserve's provenance.json the
@@ -65,6 +67,83 @@ func rewriteManifest(manifest, provenance []byte, base string) ([]byte, error) {
 		return nil, fmt.Errorf("serve: encoding rewritten manifest: %w", err)
 	}
 	return out, nil
+}
+
+// isCanvas reports whether a decoded node is a IIIF Canvas (v3 "Canvas" or
+// v2 "sc:Canvas").
+func isCanvas(m map[string]any) bool {
+	if t, _ := m["type"].(string); t == "Canvas" {
+		return true
+	}
+	t, _ := m["@type"].(string)
+	return t == "sc:Canvas"
+}
+
+// injectAnnotations attaches the user's stored annotations to the Canvases
+// they target, as an embedded W3C AnnotationPage in canvas.annotations
+// (inline items — no extra fetch, fully offline). Existing annotation pages
+// are appended to, not clobbered. Returns nil (no change) on any problem —
+// annotations must never break serving. Canvas ids are matched on the
+// original id, which the image rewrite leaves untouched.
+func injectAnnotations(manifestJSON []byte, page annotation.Page, base string) []byte {
+	by := page.ByCanvas()
+	if len(by) == 0 {
+		return nil
+	}
+	var doc any
+	if json.Unmarshal(manifestJSON, &doc) != nil {
+		return nil
+	}
+
+	n := 0
+	var walk func(any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			if isCanvas(v) {
+				if _, id := nodeID(v); id != "" {
+					if anns := by[id]; len(anns) > 0 {
+						n++
+						items := make([]any, 0, len(anns))
+						for _, a := range anns {
+							b, err := json.Marshal(a)
+							if err != nil {
+								continue
+							}
+							var m any
+							if json.Unmarshal(b, &m) == nil {
+								items = append(items, m)
+							}
+						}
+						ap := map[string]any{
+							"id":    fmt.Sprintf("%s/annotations/%d", strings.TrimRight(base, "/"), n),
+							"type":  "AnnotationPage",
+							"items": items,
+						}
+						if ex, ok := v["annotations"].([]any); ok {
+							v["annotations"] = append(ex, ap)
+						} else {
+							v["annotations"] = []any{ap}
+						}
+					}
+				}
+			}
+			for _, c := range v {
+				walk(c)
+			}
+		case []any:
+			for _, e := range v {
+				walk(e)
+			}
+		}
+	}
+	walk(doc)
+
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // matchLocal returns the local target for an id/service string that begins

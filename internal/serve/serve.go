@@ -13,8 +13,11 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sarahmaeve/go-iiif/internal/annotation"
 )
 
 // Server serves a preserved-bundle directory tree as static files, bound to
@@ -124,17 +127,28 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 		return
 	}
 
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	base := scheme + "://" + r.Host + strings.TrimSuffix(clean, "/manifest.json")
+
 	out := manifest
 	if pf, perr := dir.Open(path.Join(path.Dir(clean), "provenance.json")); perr == nil {
 		prov, _ := io.ReadAll(pf)
 		_ = pf.Close()
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		base := scheme + "://" + r.Host + strings.TrimSuffix(clean, "/manifest.json")
 		if rw, rerr := rewriteManifest(manifest, prov, base); rerr == nil {
 			out = rw
+		}
+	}
+
+	// Inject the user's offline annotations into the Canvases they target
+	// so Mirador displays them. Absent/empty store or any error → manifest
+	// unchanged; annotations must never break serving.
+	annDir := filepath.Join(s.root, filepath.FromSlash(path.Dir(clean)))
+	if page, lerr := annotation.Load(annDir); lerr == nil && len(page.Items) > 0 {
+		if inj := injectAnnotations(out, page, base); inj != nil {
+			out = inj
 		}
 	}
 
