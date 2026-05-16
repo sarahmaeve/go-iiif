@@ -90,10 +90,10 @@ func TestIntegration_LivePilotManifests(t *testing.T) {
 			defer cancel()
 
 			p := New(Config{
-				Source:  fakeSource{tc.url},
-				Fetcher: fetcher,
-				Mapping: tc.mapping,
-				Filter:  tc.filter,
+				Source:       fakeSource{tc.url},
+				Fetcher:      fetcher,
+				Institutions: regWith(tc.mapping),
+				Filter:       tc.filter,
 			})
 
 			var got []Result
@@ -149,11 +149,11 @@ func TestIntegration_ConcurrentMultiHost(t *testing.T) {
 	}
 
 	p := New(Config{
-		Source:  fakeSource{gallica, bodleian},
-		Fetcher: sf,
-		Mapping: mapping,
-		Filter:  metadata.Filter{}, // no constraint: assert extraction, not selection
-		Workers: 2,
+		Source:       fakeSource{gallica, bodleian},
+		Fetcher:      sf,
+		Institutions: regWith(mapping),
+		Filter:       metadata.Filter{}, // no constraint: assert extraction, not selection
+		Workers:      2,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

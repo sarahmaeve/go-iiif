@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/sarahmaeve/go-iiif/internal/institution"
 )
 
 // jitterStep is the granularity of the random politeness pad: the pad is a
@@ -44,18 +46,18 @@ func (rp RatePolicy) For(host string) HostPolicy {
 // strongly rate-sensitive (the reference tool spaces Gallica requests by
 // ~12s; we use 13s). Overridable via WithRatePolicy.
 func DefaultRatePolicy() RatePolicy {
-	return RatePolicy{
-		Default: HostPolicy{
-			MinInterval: 750 * time.Millisecond,
-			Burst:       1,
-			Jitter:      600 * time.Millisecond,
-		},
-		ByHost: map[string]HostPolicy{
-			// Gallica/BnF is strongly rate-sensitive; the fixed 13s
-			// spacing is deliberate, so no jitter here.
-			"gallica.bnf.fr": {MinInterval: 13 * time.Second, Burst: 1},
-		},
+	reg := institution.Builtin()
+	hp := func(p institution.Profile) HostPolicy {
+		return HostPolicy{MinInterval: p.MinInterval, Burst: p.Burst, Jitter: p.Jitter}
 	}
+	rp := RatePolicy{
+		Default: hp(reg.Default),
+		ByHost:  make(map[string]HostPolicy, len(reg.ByHost)),
+	}
+	for host, p := range reg.ByHost {
+		rp.ByHost[host] = hp(p)
+	}
+	return rp
 }
 
 // jitterPad returns a uniform random multiple of jitterStep in

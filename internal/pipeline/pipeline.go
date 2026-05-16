@@ -8,8 +8,10 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	neturl "net/url"
 	"sync"
 
+	"github.com/sarahmaeve/go-iiif/internal/institution"
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/source"
 )
@@ -18,9 +20,9 @@ import (
 type Config struct {
 	Source  source.Source
 	Fetcher source.Fetcher
-	// Mapping is the per-institution label→field mapping for the manifests
-	// this Source yields.
-	Mapping metadata.FieldMapping
+	// Institutions resolves the per-institution profile (incl. the
+	// label→field mapping) by each manifest's URL host.
+	Institutions institution.Registry
 	// Filter is the researcher's selection predicate.
 	Filter metadata.Filter
 	// Workers is the number of concurrent per-manifest workers. <=1 runs
@@ -155,7 +157,12 @@ func (p *Pipeline) process(ctx context.Context, url string) Result {
 	if err != nil {
 		return Result{ManifestURL: url, Err: fmt.Errorf("pipeline: %s: %w", url, err)}
 	}
-	rec := metadata.BuildWorkRecord(entries, p.cfg.Mapping)
+	host := ""
+	if u, perr := neturl.Parse(url); perr == nil {
+		host = u.Host
+	}
+	mapping := p.cfg.Institutions.For(host).FieldMapping
+	rec := metadata.BuildWorkRecord(entries, mapping)
 	return Result{
 		ManifestURL: url,
 		Class:       p.cfg.Filter.Classify(rec),

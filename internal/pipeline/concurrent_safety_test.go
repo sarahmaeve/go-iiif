@@ -31,11 +31,11 @@ func TestPipeline_ConcurrentEarlyBreakNoLeak(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	p := New(Config{
-		Source:  bigSource(50),
-		Fetcher: fakeFetcher{}, // returns "" → ExtractV2Metadata errors → Result{Err}
-		Mapping: metadata.FieldMapping{},
-		Filter:  metadata.Filter{},
-		Workers: 4,
+		Source:       bigSource(50),
+		Fetcher:      fakeFetcher{}, // returns "" → ExtractV2Metadata errors → Result{Err}
+		Institutions: regWith(metadata.FieldMapping{}),
+		Filter:       metadata.Filter{},
+		Workers:      4,
 	})
 
 	for range p.Run(context.Background()) {
@@ -48,11 +48,11 @@ func TestPipeline_ConcurrentContextCancelStops(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p := New(Config{
-		Source:  bigSource(50),
-		Fetcher: blockingCtxFetcher{}, // every worker parks until ctx done
-		Mapping: metadata.FieldMapping{},
-		Filter:  metadata.Filter{},
-		Workers: 4,
+		Source:       bigSource(50),
+		Fetcher:      blockingCtxFetcher{}, // every worker parks until ctx done
+		Institutions: regWith(metadata.FieldMapping{}),
+		Filter:       metadata.Filter{},
+		Workers:      4,
 	})
 
 	done := make(chan struct{})

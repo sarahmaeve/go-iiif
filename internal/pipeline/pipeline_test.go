@@ -6,9 +6,54 @@ import (
 	"iter"
 	"testing"
 
+	"github.com/sarahmaeve/go-iiif/internal/institution"
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/source"
 )
+
+// regWith builds a Registry whose Default profile carries m, so every host
+// resolves to the same mapping (preserves the intent of the old single
+// Config.Mapping in tests that don't care about per-host behavior).
+func regWith(m metadata.FieldMapping) institution.Registry {
+	return institution.Registry{Default: institution.Profile{FieldMapping: m}}
+}
+
+// TestPipeline_PerHostFieldMapping: the mapping is chosen by each manifest's
+// host from the registry, so an e-codices manifest classifies on e-codices'
+// own label vocabulary while a Gallica one uses Gallica's.
+func TestPipeline_PerHostFieldMapping(t *testing.T) {
+	const (
+		eco = "https://www.e-codices.unifr.ch/metadata/iiif/x/manifest.json"
+		gal = "https://gallica.bnf.fr/iiif/ark:/12148/x/manifest.json"
+	)
+	src := fakeSource{eco, gal}
+	fetcher := fakeFetcher{
+		// e-codices vocabulary: "Text Language", "Century"
+		eco: `{"@type":"sc:Manifest","metadata":[{"label":"Text Language","value":"Latin"},{"label":"Century","value":"12th century"}]}`,
+		// Gallica vocabulary: "Langue", "Date"
+		gal: `{"@type":"sc:Manifest","metadata":[{"label":"Langue","value":"latin"},{"label":"Date","value":"1450"}]}`,
+	}
+	p := New(Config{
+		Source:       src,
+		Fetcher:      fetcher,
+		Institutions: institution.Builtin(),
+		Filter:       metadata.Filter{Languages: []string{"la"}},
+	})
+
+	got := map[string]metadata.WorkRecord{}
+	for r := range p.Run(context.Background()) {
+		if r.Err != nil {
+			t.Fatalf("%s: %v", r.ManifestURL, r.Err)
+		}
+		got[r.ManifestURL] = r.Record
+	}
+	if len(got[eco].Langs) != 1 || got[eco].Langs[0] != "la" {
+		t.Fatalf("e-codices langs = %v, want [la] (resolved via 'Text Language')", got[eco].Langs)
+	}
+	if got[gal].Langs == nil || got[gal].Langs[0] != "la" {
+		t.Fatalf("gallica langs = %v, want [la] (resolved via 'Langue')", got[gal].Langs)
+	}
+}
 
 // fakeSource yields a fixed list of manifest URLs.
 type fakeSource []string
@@ -55,10 +100,10 @@ func TestPipeline_FetchErrorDoesNotAbortRun(t *testing.T) {
 		mBad  = "https://h.example.org/bad/manifest.json"
 	)
 	p := New(Config{
-		Source:  fakeSource{mBad, mGood},
-		Fetcher: errFetcher{ok: fakeFetcher{mGood: manifestJSON("français", "1450")}, failURL: mBad},
-		Mapping: metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate},
-		Filter:  metadata.Filter{Languages: []string{"fr"}},
+		Source:       fakeSource{mBad, mGood},
+		Fetcher:      errFetcher{ok: fakeFetcher{mGood: manifestJSON("français", "1450")}, failURL: mBad},
+		Institutions: regWith(metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate}),
+		Filter:       metadata.Filter{Languages: []string{"fr"}},
 	})
 
 	results := map[string]Result{}
@@ -85,10 +130,10 @@ func TestPipeline_ResultCarriesManifestBytes(t *testing.T) {
 	const m = "https://h.example.org/m/manifest.json"
 	body := manifestJSON("français", "1450")
 	p := New(Config{
-		Source:  fakeSource{m},
-		Fetcher: fakeFetcher{m: body},
-		Mapping: metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate},
-		Filter:  metadata.Filter{Languages: []string{"fr"}},
+		Source:       fakeSource{m},
+		Fetcher:      fakeFetcher{m: body},
+		Institutions: regWith(metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate}),
+		Filter:       metadata.Filter{Languages: []string{"fr"}},
 	})
 
 	var got Result
@@ -115,10 +160,10 @@ func TestPipeline_ClassifiesManifests(t *testing.T) {
 	}
 
 	p := New(Config{
-		Source:  src,
-		Fetcher: fetcher,
-		Mapping: metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate},
-		Filter:  metadata.Filter{Languages: []string{"fr"}, Date: &metadata.DateRange{Start: 1400, End: 1500}},
+		Source:       src,
+		Fetcher:      fetcher,
+		Institutions: regWith(metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate}),
+		Filter:       metadata.Filter{Languages: []string{"fr"}, Date: &metadata.DateRange{Start: 1400, End: 1500}},
 	})
 
 	got := map[string]metadata.Classification{}

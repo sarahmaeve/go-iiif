@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sarahmaeve/go-iiif/internal/institution"
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
 	"github.com/sarahmaeve/go-iiif/internal/preserve"
@@ -128,19 +129,6 @@ func formatResult(r pipeline.Result) string {
 		r.Record.DateRange.Start, r.Record.DateRange.End, r.Record.Origin)
 }
 
-// defaultMapping covers the labels seen across the pilot institutions
-// (Gallica, Digital Bodleian). A per-institution mapping flag can come later.
-func defaultMapping() metadata.FieldMapping {
-	return metadata.FieldMapping{
-		"language":        metadata.FieldLanguage,
-		"langue":          metadata.FieldLanguage,
-		"date":            metadata.FieldDate,
-		"date statement":  metadata.FieldDate,
-		"place of origin": metadata.FieldOrigin,
-		"origin":          metadata.FieldOrigin,
-	}
-}
-
 // cliWriter records the first write error so an output failure — most
 // importantly a broken pipe on stdout (`iiifpreserve … | head`) — surfaces in
 // the exit code and stops further work, rather than being silently dropped.
@@ -220,11 +208,11 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	}
 
 	p := pipeline.New(pipeline.Config{
-		Source:  src,
-		Fetcher: fetcher,
-		Mapping: defaultMapping(),
-		Filter:  o.filter(),
-		Workers: o.workers,
+		Source:       src,
+		Fetcher:      fetcher,
+		Institutions: institution.Builtin(),
+		Filter:       o.filter(),
+		Workers:      o.workers,
 	})
 
 	var store preserve.BlobStore

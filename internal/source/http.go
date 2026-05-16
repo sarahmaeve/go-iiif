@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sarahmaeve/go-iiif/internal/institution"
 )
 
 // ErrInsecureURL is returned when a URL is not https. The crawler refuses
@@ -39,25 +40,8 @@ func (e *HTTPStatusError) Error() string {
 		e.URL, e.Code, http.StatusText(e.Code))
 }
 
-// defaultUserAgent is honest on purpose. It identifies the tool, its
-// purpose, and a contact URL — so a polite one-time preservation fetch is
-// distinguishable from an abusive scraper, and so bot-walls that score
-// browser-spoofing UAs as suspicious (e.g. Anubis adds weight to any
-// "Mozilla"/"Opera" UA and then issues a JS proof-of-work an HTTP client
-// cannot solve) score this as weight 0 and let it through.
-const defaultUserAgent = "iiif-preserve/0.1 (+https://github.com/sarahmaeve/go-iiif; one-time preservation fetch of public-domain material)"
-
-// browserUserAgent is a deliberate browser-spoof, used ONLY for hosts that
-// reject honest non-browser UAs (Gallica/BnF answers them with 403). This
-// is the exception, not the default — see builtinHostUserAgents.
-const browserUserAgent = "Mozilla/5.0 (compatible; iiif-preserve/0.1; +https://github.com/sarahmaeve/go-iiif)"
-
-// builtinHostUserAgents overrides the honest default per host. Same
-// per-host shape as DefaultRatePolicy: the default is correct citizenship;
-// a host only gets an override when it forces one.
-var builtinHostUserAgents = map[string]string{
-	"gallica.bnf.fr": browserUserAgent,
-}
+// Per-host User-Agent policy (honest default + Gallica's required browser
+// spoof) lives in internal/institution — the single per-institution home.
 
 // HTTPFetcher retrieves IIIF resources over HTTPS. It implements Fetcher.
 type HTTPFetcher struct {
@@ -96,12 +80,16 @@ func WithConditionalStore(s ConditionalStore) Option {
 	return func(f *HTTPFetcher) { f.store = s }
 }
 
-// NewHTTPFetcher returns an HTTPFetcher with a browser-like User-Agent and the
-// default HTTP client unless overridden.
+// NewHTTPFetcher returns an HTTPFetcher whose default and per-host
+// User-Agents come from the institution registry (honest default; Gallica
+// browser-spoof override), and the default HTTP client unless overridden.
 func NewHTTPFetcher(opts ...Option) *HTTPFetcher {
-	hostUA := make(map[string]string, len(builtinHostUserAgents))
-	maps.Copy(hostUA, builtinHostUserAgents)
-	f := &HTTPFetcher{client: http.DefaultClient, userAgent: defaultUserAgent, hostUA: hostUA}
+	reg := institution.Builtin()
+	hostUA := make(map[string]string, len(reg.ByHost))
+	for host, p := range reg.ByHost {
+		hostUA[host] = p.UserAgent
+	}
+	f := &HTTPFetcher{client: http.DefaultClient, userAgent: reg.Default.UserAgent, hostUA: hostUA}
 	for _, opt := range opts {
 		opt(f)
 	}

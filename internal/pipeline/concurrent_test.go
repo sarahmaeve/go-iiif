@@ -50,11 +50,11 @@ func TestPipeline_ConcurrentFanOut(t *testing.T) {
 	}
 
 	p := New(Config{
-		Source:  urls,
-		Fetcher: bf,
-		Mapping: metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate},
-		Filter:  metadata.Filter{Languages: []string{"fr"}},
-		Workers: workers,
+		Source:       urls,
+		Fetcher:      bf,
+		Institutions: regWith(metadata.FieldMapping{"language": metadata.FieldLanguage, "date": metadata.FieldDate}),
+		Filter:       metadata.Filter{Languages: []string{"fr"}},
+		Workers:      workers,
 	})
 
 	var mu sync.Mutex

@@ -204,12 +204,15 @@ carries the most risk.
   tiles/info.json is also automated-test covered.
 - Free-text-embedded dates: deferred parser gap (needs false-positive-rate
   decision) that still costs some filter recall.
-- **Per-institution field mapping**: e-codices labels (`Text Language`,
-  `Date of Origin (English)`, `Place of Origin (English)`, `Century`)
-  aren't in the default mapping, so a *filtered crawl* of e-codices won't
-  constrain on lang/date (lenient filter keeps items, doesn't drop them).
-  Direct `-manifest` is unaffected. Motivates the deferred per-institution
-  `FieldMapping` config; verified sources are listed in `VERIFIED.md`.
+- **Per-institution config — RESOLVED/consolidated.** Rate, User-Agent,
+  and field mapping were three parallel mechanisms (`source.RatePolicy`,
+  `source.builtinHostUserAgents`, cmd's `defaultMapping`). They now live in
+  one host-keyed `institution.Profile`/`Registry` (`internal/institution`,
+  the single source of truth; `source` derives its limiter/UA from it, the
+  pipeline resolves the mapping per *manifest* host). The e-codices label
+  vocabulary (`Text Language`, `Date of Origin (English)`, `Place of Origin
+  (English)`, `Century`) is in the shared default mapping, so filtered
+  e-codices crawls now constrain correctly. Adding a source is one place.
 - **Out of polite scope:** Library of Congress (`www.loc.gov`) fronts its
   IIIF with Akamai-class edge protection that 403s programmatic clients
   regardless of User-Agent (browser-spoof also 403s; even WebFetch 403s).
@@ -255,7 +258,8 @@ checks are `-tags=integration` opt-in or the manual binary.
 |---|---|---|
 | Date parser (year, ranges, Arabic/Roman centuries, `circa` fuzzy ±20y) | ✅ done | `internal/metadata` |
 | Language → ISO-639 normalizer (8 langs: name/endonym/639-2) | ✅ done | `internal/metadata` |
-| `WorkRecord` builder + per-institution `FieldMapping` | ✅ done | `internal/metadata` |
+| `WorkRecord` builder + `FieldMapping` (mapping data lives in `internal/institution`) | ✅ done | `internal/metadata` |
+| **Consolidated per-institution `Profile`/`Registry`** (rate + UA + field mapping, host-keyed; single source of truth — `source` derives limiter/UA, pipeline resolves mapping per manifest host) | ✅ done | `internal/institution` |
 | Two-outcome `match`/`no-match` filter (lang/date/origin; lenient on missing data) | ✅ done | `internal/metadata` |
 | Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
