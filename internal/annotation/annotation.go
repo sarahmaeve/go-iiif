@@ -24,16 +24,93 @@ const FileName = "annotations.json"
 
 const defaultContext = "http://www.w3.org/ns/anno.jsonld"
 
-// Annotation is one W3C Web Annotation. Motivation/Body/Target are kept as
-// raw JSON: the store neither constrains nor reinterprets what a client
-// wrote, so highlights, SVG shapes, transcriptions, translations, tags and
-// bookmarks all persist unchanged.
+// Annotation is one W3C Web Annotation. The store neither constrains nor
+// reinterprets what a client wrote: ID/Type/Motivation/Body/Target are the
+// fields the store itself indexes on, and Extra carries every *other*
+// top-level field verbatim. A client like MAE adds creator, creationDate,
+// maeData (its editable drawing state) and a per-annotation @context;
+// dropping any of them would stop MAE matching/editing a reloaded
+// annotation, so the round-trip is byte-faithful (Body/Target/Extra are
+// raw JSON, emitted unescaped).
 type Annotation struct {
-	ID         string          `json:"id"`
-	Type       string          `json:"type"`
-	Motivation any             `json:"motivation,omitempty"`
-	Body       json.RawMessage `json:"body,omitempty"`
-	Target     json.RawMessage `json:"target"`
+	ID         string
+	Type       string
+	Motivation any
+	Body       json.RawMessage
+	Target     json.RawMessage
+	Extra      map[string]json.RawMessage // any non-core top-level fields, passed through unchanged
+}
+
+// coreField reports whether key is one the struct models explicitly (so it
+// must not also live in Extra, or it would be written twice).
+func coreField(key string) bool {
+	switch key {
+	case "id", "type", "motivation", "body", "target":
+		return true
+	}
+	return false
+}
+
+// UnmarshalJSON keeps every non-core top-level field in Extra so nothing a
+// client wrote is lost on the storage round-trip.
+func (a *Annotation) UnmarshalJSON(b []byte) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	*a = Annotation{}
+	if v, ok := m["id"]; ok {
+		_ = json.Unmarshal(v, &a.ID)
+	}
+	if v, ok := m["type"]; ok {
+		_ = json.Unmarshal(v, &a.Type)
+	}
+	if v, ok := m["motivation"]; ok {
+		_ = json.Unmarshal(v, &a.Motivation)
+	}
+	a.Body = m["body"]
+	a.Target = m["target"]
+	for k, v := range m {
+		if !coreField(k) {
+			if a.Extra == nil {
+				a.Extra = make(map[string]json.RawMessage)
+			}
+			a.Extra[k] = v
+		}
+	}
+	return nil
+}
+
+// MarshalJSON re-emits the core fields plus the verbatim Extra fields.
+// Body/Target/Extra are json.RawMessage so they pass through byte-for-byte
+// (no re-escaping of e.g. SvgSelector markup).
+func (a Annotation) MarshalJSON() ([]byte, error) {
+	m := make(map[string]json.RawMessage, len(a.Extra)+5)
+	for k, v := range a.Extra {
+		if !coreField(k) {
+			m[k] = v
+		}
+	}
+	idb, _ := json.Marshal(a.ID)
+	m["id"] = idb
+	if a.Type != "" {
+		tb, _ := json.Marshal(a.Type)
+		m["type"] = tb
+	}
+	if a.Motivation != nil {
+		mb, err := json.Marshal(a.Motivation)
+		if err != nil {
+			return nil, fmt.Errorf("annotation: encoding motivation: %w", err)
+		}
+		m["motivation"] = mb
+	}
+	if len(a.Body) > 0 {
+		m["body"] = a.Body
+	}
+	if len(a.Target) > 0 {
+		m["target"] = a.Target
+	}
+	return json.Marshal(m)
 }
 
 // Page is a IIIF Presentation 3 / W3C AnnotationPage.
@@ -52,15 +129,40 @@ func (a Annotation) CanvasID() string {
 		return strings.SplitN(s, "#", 2)[0]
 	}
 	var o struct {
-		Source string `json:"source"`
-		ID     string `json:"id"`
+		Source json.RawMessage `json:"source"`
+		ID     json.RawMessage `json:"id"`
 	}
 	if json.Unmarshal(a.Target, &o) == nil {
-		v := o.Source
+		v := resolveRef(o.Source)
 		if v == "" {
-			v = o.ID
+			v = resolveRef(o.ID)
 		}
 		return strings.SplitN(v, "#", 2)[0]
+	}
+	return ""
+}
+
+// resolveRef pulls a resource id out of a JSON value that may be a plain
+// string ("https://…/canvas") or an object ({"id"|"@id":"https://…"}).
+// MAE's SpecificResource sometimes nests the canvas as an object, which a
+// string-only decode silently dropped (→ POST 400, save lost).
+func resolveRef(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var o struct {
+		ID   string `json:"id"`
+		AtID string `json:"@id"`
+	}
+	if json.Unmarshal(raw, &o) == nil {
+		if o.ID != "" {
+			return o.ID
+		}
+		return o.AtID
 	}
 	return ""
 }

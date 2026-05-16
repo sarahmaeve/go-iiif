@@ -2,7 +2,7 @@
 BINARY := iiifpreserve
 PKG    := ./cmd/iiifpreserve
 
-.PHONY: all build install test lint fmt vet tidy clean
+.PHONY: all build install test lint fmt vet tidy clean viewer
 
 ## all: format, vet, lint, test, build (the pre-commit gate plus build)
 all: fmt vet lint test build
@@ -35,6 +35,19 @@ vet:
 tidy:
 	go mod tidy
 
+## viewer: rebuild the vendored Mirador 4 + MAE UMD bundle (needs Node;
+## one-time vendoring step — the iiifpreserve binary itself never needs
+## Node). MAE requires the *latest* Mirador 4 (its companion-window render
+## path landed after the 4.0.0 npm tag), so the bundle is built against a
+## local Mirador source checkout, not the npm release. Point MIRADOR_SRC at
+## a Mirador 4 clone (default: sibling ../mirador). Output is committed at
+## internal/serve/viewer/mirador.min.js.
+MIRADOR_SRC ?= ../mirador
+viewer:
+	cd $(MIRADOR_SRC) && npm ci && npm run build
+	cd viewer-src && npm ci && npm run build
+	cp viewer-src/dist/mirador.min.js internal/serve/viewer/mirador.min.js
+
 ## clean: remove build artifacts
 clean:
-	rm -rf bin
+	rm -rf bin viewer-src/dist viewer-src/node_modules

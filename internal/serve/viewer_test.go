@@ -238,6 +238,29 @@ func TestServer_ServesEmbeddedMiradorBundle(t *testing.T) {
 	}
 }
 
+// The vendored bundle is our custom Mirador 4 + MAE build (rebuilt from
+// source with the annotation editor folded in), not the stock viewer:
+// region-drag annotation authoring depends on MAE being present. Guards
+// against a regression to a plain Mirador bundle. ("add_a_rectangle" is a
+// MAE-only i18n key; absent from stock Mirador. Verified red against the
+// prior stock bundle.) The UMD global wrapper must still be intact.
+func TestServer_BundleIsMAEAnnotationBuild(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	code, body, _ := viewerGet(t, ts, "/__viewer__/mirador.min.js")
+	if code != http.StatusOK {
+		t.Fatalf("GET mirador bundle = %d, want 200", code)
+	}
+	if !strings.Contains(body, "add_a_rectangle") {
+		t.Fatal("bundle is not the MAE annotation build (missing MAE region tool); " +
+			"region-drag annotation authoring will be unavailable")
+	}
+	if !strings.Contains(body, "ye.Mirador") && !strings.Contains(body, "Mirador=") {
+		t.Fatal("custom build did not preserve the Mirador UMD global")
+	}
+}
+
 // TestServer_ViewerPageEmbedsMiradorPointedAtLocalManifest: GET /<dir>/
 // returns a Mirador page that loads the embedded bundle and instantiates the
 // viewer against this dir's local (serve-time-rewritten) manifest.
@@ -267,25 +290,31 @@ func TestServer_ViewerHasLibraryRail(t *testing.T) {
 	}
 }
 
-// C2: the viewer carries an in-page annotation authoring affordance wired
-// to the C1 endpoint, alongside (not replacing) the Mirador wiring.
-func TestServer_ViewerHasAuthoringUI(t *testing.T) {
+// Authoring is now done in-canvas via MAE (drag a region, edit in MAE's
+// companion window). The legacy pure-Go "Annotate this manuscript"
+// <details> form is removed: it duplicated MAE's affordance and confused
+// the masthead. The viewer must NOT carry that form, and MAE/Mirador
+// must still be wired.
+func TestServer_ViewerHasNoLegacyAuthoringForm(t *testing.T) {
 	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
 	defer ts.Close()
 
 	_, body, _ := viewerGet(t, ts, "/cookbook-v3/")
 
-	for _, want := range []string{
-		`id="annotate-form"`,         // the authoring form
-		`id="annotate-text"`,         // the note/translation text field
-		`id="annotate-canvas"`,       // page (canvas) chooser
-		`id="annotate-kind"`,         // motivation chooser (note/translation/tag/bookmark/highlight)
-		"annotations",                // posts to the C1 endpoint
-		"/__viewer__/mirador.min.js", // Mirador still wired
-		"Mirador.viewer",
+	for _, gone := range []string{
+		`id="annotate-form"`,
+		`id="annotate-text"`,
+		`id="annotate-canvas"`,
+		`id="annotate-kind"`,
+		"Annotate this manuscript",
 	} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("legacy pure-Go authoring form still present (%q); MAE is the authoring path now; body=%s", gone, body)
+		}
+	}
+	for _, want := range []string{"/__viewer__/mirador.min.js", "Mirador.viewer"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("viewer authoring UI missing %q; body=%s", want, body)
+			t.Fatalf("viewer no longer wires Mirador/MAE (missing %q); body=%s", want, body)
 		}
 	}
 }

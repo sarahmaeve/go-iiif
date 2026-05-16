@@ -16,6 +16,11 @@ func TestCanvasID(t *testing.T) {
 		{"string target with fragment", `"https://ex/iiif/canvas/p1#xywh=10,20,30,40"`, "https://ex/iiif/canvas/p1"},
 		{"object source+selector", `{"source":"https://ex/iiif/canvas/p2","selector":{"type":"FragmentSelector","value":"xywh=0,0,5,5"}}`, "https://ex/iiif/canvas/p2"},
 		{"object id", `{"id":"https://ex/iiif/canvas/p3#xywh=1,1,1,1","type":"Canvas"}`, "https://ex/iiif/canvas/p3"},
+		// MAE emits a SpecificResource whose source can itself be an
+		// object ({id|@id}). The struct-into-string decode used to fail
+		// outright on this, dropping the canvas → POST 400 → save lost.
+		{"object source object", `{"source":{"id":"https://ex/iiif/canvas/p4","type":"Canvas"},"selector":{"type":"SvgSelector","value":"<svg/>"}}`, "https://ex/iiif/canvas/p4"},
+		{"object source @id", `{"source":{"@id":"https://ex/iiif/canvas/p5"}}`, "https://ex/iiif/canvas/p5"},
 		{"empty", `""`, ""},
 	}
 	for _, c := range cases {
@@ -25,6 +30,54 @@ func TestCanvasID(t *testing.T) {
 				t.Fatalf("CanvasID(%s) = %q, want %q", c.target, got, c.want)
 			}
 		})
+	}
+}
+
+// MAE writes annotations with top-level fields beyond the W3C core
+// (creator, creationDate, maeData carrying the editable drawing state,
+// a per-annotation @context). If the store drops them, MAE can no longer
+// match/edit a reloaded annotation — the reported "not saved / shown
+// double" symptom. The store must round-trip an annotation verbatim.
+func TestAnnotation_LosslessRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	const raw = `{"@context":"http://www.w3.org/ns/anno.jsonld","id":"https://h/d/annotations?canvas=c1/annotation/abc","type":"Annotation","motivation":"commenting","creator":{"id":"urn:user:anon","type":"Person","name":"Anonymous"},"creationDate":"2026-05-15T00:00:00.000Z","maeData":{"templateType":"TEXT_TYPE","drawingState":{"shapes":[{"type":"rectangle","x":1,"y":2}]}},"body":[{"type":"TextualBody","value":"hi","purpose":"commenting"}],"target":{"source":"https://h/d/canvas/c1","selector":[{"type":"SvgSelector","value":"<svg/>"},{"type":"FragmentSelector","value":"xywh=1,2,3,4"}]}}`
+
+	var a Annotation
+	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+		t.Fatalf("unmarshal MAE annotation: %v", err)
+	}
+	if a.ID != "https://h/d/annotations?canvas=c1/annotation/abc" {
+		t.Fatalf("known field ID not parsed: %q", a.ID)
+	}
+	if a.CanvasID() != "https://h/d/canvas/c1" {
+		t.Fatalf("CanvasID = %q, want the source canvas", a.CanvasID())
+	}
+	if err := Add(dir, a); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	p, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(p.Items) != 1 {
+		t.Fatalf("want 1 item, got %d", len(p.Items))
+	}
+	out, err := json.Marshal(p.Items[0])
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("stored item not an object: %v", err)
+	}
+	for _, k := range []string{"@context", "creator", "creationDate", "maeData", "body", "target", "id", "type", "motivation"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("lossy round-trip: field %q dropped\nstored: %s", k, out)
+		}
+	}
+	// The editable drawing state must survive byte-for-byte (MAE re-opens it).
+	if !json.Valid(got["maeData"]) || string(got["maeData"]) == "null" {
+		t.Fatalf("maeData not preserved: %s", got["maeData"])
 	}
 }
 

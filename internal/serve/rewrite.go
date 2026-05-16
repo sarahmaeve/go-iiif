@@ -1,10 +1,8 @@
 package serve
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,15 +116,6 @@ func isCanvas(m map[string]any) bool {
 	return t == "sc:Canvas"
 }
 
-// appendArr appends item to existing if it is a JSON array, else starts a
-// new one — so an existing annotations/otherContent list is never clobbered.
-func appendArr(existing, item any) []any {
-	if ex, ok := existing.([]any); ok {
-		return append(ex, item)
-	}
-	return []any{item}
-}
-
 // toOpenAnnotation converts a stored W3C annotation to the IIIF
 // Presentation 2 Open Annotation shape Mirador reads from a v2 canvas's
 // otherContent (sc:AnnotationList). FragmentSelector/string targets carry
@@ -165,76 +154,6 @@ func toOpenAnnotation(a annotation.Annotation) map[string]any {
 		oa["resource"] = []any{res}
 	}
 	return oa
-}
-
-// annotationRefURL is the per-canvas annotation endpoint Mirador will
-// fetch. fmt selects the shape Mirador's loader expects for that manifest
-// version: "w3c" (AnnotationPage) for v3, "oa" (sc:AnnotationList) for v2.
-func annotationRefURL(base, canvasID, fmtq string) string {
-	return fmt.Sprintf("%s/annotations?canvas=%s&fmt=%s",
-		strings.TrimRight(base, "/"), url.QueryEscape(canvasID), fmtq)
-}
-
-// injectAnnotations adds, to each Canvas that has stored annotations, a
-// *reference* to this server's per-canvas annotation endpoint — because
-// Mirador loads annotations by fetching the AnnotationPage/AnnotationList
-// by id/@id (it ignores inline items/resources). v3 → canvas.annotations
-// (AnnotationPage), v2 → canvas.otherContent (sc:AnnotationList). The
-// endpoint is on this same loopback server, so it stays fully offline.
-// Existing lists are appended to, not clobbered. Returns nil (no change)
-// on any problem — annotations must never break serving. Canvas ids match
-// the original id, which the image rewrite leaves untouched.
-func injectAnnotations(manifestJSON []byte, page annotation.Page, base string) []byte {
-	by := page.ByCanvas()
-	if len(by) == 0 {
-		return nil
-	}
-	var doc any
-	if json.Unmarshal(manifestJSON, &doc) != nil {
-		return nil
-	}
-
-	var walk func(any)
-	walk = func(node any) {
-		switch v := node.(type) {
-		case map[string]any:
-			if isCanvas(v) {
-				if _, id := nodeID(v); id != "" && len(by[id]) > 0 {
-					if t, _ := v["type"].(string); t == "Canvas" {
-						v["annotations"] = appendArr(v["annotations"], map[string]any{
-							"id":   annotationRefURL(base, id, "w3c"),
-							"type": "AnnotationPage",
-						})
-					} else {
-						v["otherContent"] = appendArr(v["otherContent"], map[string]any{
-							"@id":   annotationRefURL(base, id, "oa"),
-							"@type": "sc:AnnotationList",
-						})
-					}
-				}
-			}
-			for _, c := range v {
-				walk(c)
-			}
-		case []any:
-			for _, e := range v {
-				walk(e)
-			}
-		}
-	}
-	walk(doc)
-
-	// Encode without HTML escaping so the injected annotation URL keeps a
-	// literal "&" (Go would otherwise emit & — valid JSON Mirador
-	// decodes fine, but the manifest stays human-readable this way).
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(doc); err != nil {
-		return nil
-	}
-	return buf.Bytes()
 }
 
 // matchLocal returns the local target for an id/service string that begins

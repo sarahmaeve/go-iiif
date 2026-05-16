@@ -17,9 +17,16 @@ import (
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 )
 
-// miradorBundle is the vendored prebuilt Mirador 4 UMD bundle, embedded so
-// the binary needs no external viewer and no Node runtime (DESIGN §2). Pinned
-// to mirador@4.0.0 (dist/mirador.min.js from unpkg).
+// miradorBundle is the vendored Mirador 4 UMD bundle, embedded so the
+// binary needs no external viewer and no Node runtime (DESIGN §2). It is a
+// custom build (viewer-src/, `make viewer`): Mirador 4 built from a local
+// source checkout — not the npm 4.0.0 tag, which lacks the companion-window
+// render path MAE's creation tools need (added to Mirador 4 after 4.0.0;
+// MAE's own README requires the latest Mirador 4) — with the MAE annotation
+// editor and an HTTP storage adapter folded in, so a researcher can draw
+// region annotations on the canvas and have them persisted to the local
+// bundle. Still a single asset (MAE CSS is inlined); the build is the only
+// thing that uses Node, never the binary.
 //
 //go:embed viewer/mirador.min.js
 var miradorBundle []byte
@@ -109,7 +116,7 @@ var viewerTmpl = template.Must(template.New("viewer").Parse(`<!doctype html>
 <style>
 @font-face{font-family:"Newsreader";font-weight:700;font-display:swap;src:url("` + fontsRoutePrefix + `newsreader-700.woff2") format("woff2")}
 @font-face{font-family:"IBM Plex Mono";font-weight:600;font-display:swap;src:url("` + fontsRoutePrefix + `ibm-plex-mono-600.woff2") format("woff2")}
-:root{--bg:#f4efe8;--surface:#fbf8f3;--text:#1c1917;--muted:#6a625b;--border:#c9bfb2;--accent:#8b2332;--primary:#1f2933;--success:#2f6b45}
+:root{--bg:#f4efe8;--surface:#fbf8f3;--text:#1c1917;--muted:#6a625b;--border:#c9bfb2;--accent:#8b2332;--primary:#1f2933}
 html,body{height:100%;margin:0}
 body{display:flex;flex-direction:column;overflow:hidden;background:var(--bg);
  font-family:"Source Serif 4",Georgia,serif;color:var(--text)}
@@ -132,29 +139,6 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.35rem;line
    + min-height:0 gives it the height below the masthead. (per Mirador
    wiki, "Embedding in Another Environment") */
 #mirador{flex:1;min-height:0;position:relative;overflow:hidden}
-details.annotate{margin-top:8px}
-details.annotate>summary{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:.7rem;
- font-weight:600;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);cursor:pointer;list-style:none}
-details.annotate>summary::-webkit-details-marker{display:none}
-details.annotate>summary::before{content:"+ ";color:var(--accent)}
-details.annotate[open]>summary::before{content:"\2013 "}
-.annotate form{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:flex-end;
- margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
-.annotate label{display:flex;flex-direction:column;gap:3px;font-family:"IBM Plex Mono",ui-monospace,monospace;
- font-size:.6rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
-.annotate select,.annotate input,.annotate textarea{font-family:"Source Serif 4",Georgia,serif;
- font-size:.9rem;padding:5px 7px;border:1px solid var(--border);border-radius:6px;
- background:var(--surface);color:var(--text)}
-.annotate textarea{min-width:17rem;min-height:2.2rem;resize:vertical}
-.annotate input.xywh{width:3.6rem}
-.annotate button{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.66rem;font-weight:600;
- text-transform:uppercase;letter-spacing:.1em;color:#fff;background:var(--primary);border:0;
- border-radius:6px;padding:8px 16px;cursor:pointer}
-.annotate button:hover{background:var(--accent)}
-.annotate .status{flex-basis:100%;font-family:"IBM Plex Mono",ui-monospace,monospace;
- font-size:.66rem;letter-spacing:.06em;color:var(--muted)}
-.annotate .status.err{color:var(--accent)}
-.annotate .status.ok{color:var(--success)}
 .stage{display:flex;flex:1;min-height:0}
 aside.library{width:15rem;flex:none;overflow-y:auto;background:var(--bg);
  border-right:2px solid var(--primary);padding:14px 0}
@@ -170,27 +154,6 @@ aside.library a[aria-current]{color:var(--accent);background:var(--surface);
 <header class="masthead">
 <div class="top"><p class="kicker">Preserved manuscript · offline</p><a class="back" href="/">&larr; Catalogue</a></div>
 <h1>{{.Cur.Title}}<span class="from">from <a href="{{.Cur.RecordURL}}" rel="noopener noreferrer">{{.Cur.Institution}}</a></span></h1>
-<details class="annotate">
-<summary>Annotate this manuscript (saved offline, beside the preserved copy)</summary>
-<form id="annotate-form">
-<label>Page<select id="annotate-canvas"></select></label>
-<label>Kind<select id="annotate-kind">
-<option value="commenting">Note</option>
-<option value="translating">Translation</option>
-<option value="tagging">Tag</option>
-<option value="highlighting">Highlight</option>
-<option value="bookmarking">Bookmark</option>
-</select></label>
-<label>Text<textarea id="annotate-text" placeholder="note, translation, or tag"></textarea></label>
-<label>Lang<input id="annotate-lang" size="4" placeholder="en"></label>
-<label>x<input id="annotate-x" class="xywh" inputmode="numeric"></label>
-<label>y<input id="annotate-y" class="xywh" inputmode="numeric"></label>
-<label>w<input id="annotate-w" class="xywh" inputmode="numeric"></label>
-<label>h<input id="annotate-h" class="xywh" inputmode="numeric"></label>
-<button type="submit">Save</button>
-<span class="status" id="annotate-status"></span>
-</form>
-</details>
 </header>
 <div class="stage">
 <aside class="library">
@@ -223,82 +186,6 @@ aside.library a[aria-current]{color:var(--accent);background:var(--surface);
     },
     windows: [{ manifestId: document.getElementById('mirador').dataset.manifest }]
   });
-</script>
-<script>
-/* Annotation authoring: pure, dependency-free, decoupled from Mirador
-   internals. Reads the served manifest for the canvas list and POSTs a
-   W3C annotation to the C1 endpoint (relative URLs resolve under this
-   /<dir>/ page). No template values in JS — avoids html/template's
-   JS-string escaping entirely. */
-(function () {
-  var form = document.getElementById('annotate-form');
-  if (!form) return;
-  var sel = document.getElementById('annotate-canvas');
-  var st = document.getElementById('annotate-status');
-  function lab(l) {
-    if (!l) return '';
-    if (typeof l === 'string') return l;
-    if (Array.isArray(l)) return lab(l[0]);
-    if (typeof l === 'object') { for (var k in l) return lab(l[k]); }
-    return '';
-  }
-  fetch('manifest.json').then(function (r) { return r.json(); }).then(function (m) {
-    var cs = [];
-    if (Array.isArray(m.items)) {
-      m.items.forEach(function (i) { if (i.type === 'Canvas') cs.push({ id: i.id, label: lab(i.label) }); });
-    } else if (m.sequences && m.sequences[0] && m.sequences[0].canvases) {
-      m.sequences[0].canvases.forEach(function (c) { cs.push({ id: c['@id'], label: lab(c.label) }); });
-    }
-    cs.forEach(function (c, n) {
-      var o = document.createElement('option');
-      o.value = c.id;
-      // Always show a sequence number; many manifests label every canvas
-      // "NP" (no pagination) or leave it blank — append the label only
-      // when it actually says something.
-      var lb = (c.label || '').trim();
-      o.textContent = 'p. ' + (n + 1) +
-        (lb && lb.toUpperCase() !== 'NP' ? ' — ' + lb : '');
-      sel.appendChild(o);
-    });
-    if (!cs.length) { st.textContent = 'no pages found'; st.className = 'status err'; }
-  }).catch(function () { st.textContent = 'could not load pages'; st.className = 'status err'; });
-
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var cid = sel.value;
-    if (!cid) return;
-    var kind = document.getElementById('annotate-kind').value;
-    var v = function (id) { return document.getElementById(id).value.trim(); };
-    var text = v('annotate-text'), lang = v('annotate-lang');
-    var x = v('annotate-x'), y = v('annotate-y'), w = v('annotate-w'), h = v('annotate-h');
-    var target = (x && y && w && h) ? cid + '#xywh=' + [x, y, w, h].join(',') : cid;
-    var ann = { type: 'Annotation', motivation: kind, target: target };
-    if (kind !== 'bookmarking' && text) {
-      var b = { type: 'TextualBody', value: text, format: 'text/plain' };
-      if (kind === 'translating' && lang) b.language = lang;
-      ann.body = b;
-    }
-    st.textContent = 'saving'; st.className = 'status';
-    fetch('annotations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ann)
-    }).then(function (r) {
-      if (r.status !== 201) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }).then(function () {
-      st.textContent = 'saved — ';
-      var a = document.createElement('a');
-      a.href = ''; a.textContent = 'reload to view it';
-      st.appendChild(a);
-      st.className = 'status ok';
-      form.reset();
-    }).catch(function (err) {
-      st.textContent = 'save failed: ' + err.message;
-      st.className = 'status err';
-    });
-  });
-})();
 </script>
 </body>
 </html>

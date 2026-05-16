@@ -343,15 +343,13 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 		}
 	}
 
-	// Inject the user's offline annotations into the Canvases they target
-	// so Mirador displays them. Absent/empty store or any error → manifest
-	// unchanged; annotations must never break serving.
-	annDir := filepath.Join(s.root, filepath.FromSlash(path.Dir(clean)))
-	if page, lerr := annotation.Load(annDir); lerr == nil && len(page.Items) > 0 {
-		if inj := injectAnnotations(out, page, base); inj != nil {
-			out = inj
-		}
-	}
+	// Annotations are NOT injected into the served manifest. The embedded
+	// viewer is Mirador + MAE, whose storage adapter loads annotations
+	// from /<dir>/annotations and dispatches them for display itself
+	// (MAE's receiveAnnotation saga). Injecting a manifest reference too
+	// would make Mirador core fetch the same page independently — every
+	// stored annotation would render twice. The REST endpoint is the
+	// single source of truth for display, create, and edit.
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out) //nolint:errcheck // best-effort response write; client disconnect is not actionable

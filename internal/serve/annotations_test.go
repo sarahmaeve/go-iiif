@@ -11,31 +11,14 @@ import (
 	"testing"
 )
 
-// injectedRef pulls the per-canvas annotation endpoint URL Mirador will
-// fetch out of a served manifest (the path+query, for viewerGet).
-func injectedRef(t *testing.T, manifestBody string) string {
-	t.Helper()
-	k := strings.Index(manifestBody, "/annotations?canvas=")
-	if k < 0 {
-		t.Fatalf("no annotation reference injected:\n%s", manifestBody)
-	}
-	s := strings.LastIndex(manifestBody[:k], `"`) + 1
-	e := strings.Index(manifestBody[k:], `"`) + k
-	full := manifestBody[s:e]
-	// strip scheme://host (keep the full /<dir>/annotations?… path+query)
-	if i := strings.Index(full, "://"); i >= 0 {
-		if j := strings.Index(full[i+3:], "/"); j >= 0 {
-			return full[i+3+j:]
-		}
-	}
-	return full
-}
-
-// Mirador loads annotations by FETCHING the AnnotationPage/AnnotationList
-// by id (it ignores inline items/resources). So the served manifest must
-// carry a *reference* to our per-canvas endpoint, and that endpoint must
-// return the note. v3 → canvas.annotations (AnnotationPage, fmt=w3c).
-func TestServer_InjectsAnnotationReference_V3(t *testing.T) {
+// The embedded viewer is Mirador + MAE; MAE's storage adapter loads
+// annotations from /<dir>/annotations and dispatches them for display
+// itself. The served manifest must therefore carry NO annotation
+// reference — injecting one would make Mirador core fetch the same page
+// independently and every stored annotation would render twice (the
+// reported "shown double" bug). The REST endpoint stays the single
+// source of truth; the manifest is left to the image rewrite only.
+func TestServer_ManifestNotAnnotationInjected(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "inst", "ms")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -62,16 +45,17 @@ func TestServer_InjectsAnnotationReference_V3(t *testing.T) {
 	defer ts.Close()
 
 	_, body, _ := viewerGet(t, ts, "/inst/ms/manifest.json")
-	// A reference, NOT the inline note text.
-	if strings.Contains(body, "a scholarly marginal note") {
-		t.Fatalf("note must be referenced, not inlined, into the manifest:\n%s", body)
+	// No second load path: no injected endpoint reference, no v2
+	// otherContent list, and the painting AnnotationPage left intact.
+	for _, banned := range []string{"/annotations?canvas=", "otherContent", "sc:AnnotationList"} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("served manifest still injects an annotation path (%q) — Mirador core would double-load:\n%s", banned, body)
+		}
 	}
 	var m struct {
 		Items []struct {
 			Items       []struct{ Type string } `json:"items"`
-			Annotations []struct {
-				Type, ID string
-			} `json:"annotations"`
+			Annotations []json.RawMessage       `json:"annotations"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(body), &m); err != nil {
@@ -79,56 +63,17 @@ func TestServer_InjectsAnnotationReference_V3(t *testing.T) {
 	}
 	cv := m.Items[0]
 	if len(cv.Items) != 1 || cv.Items[0].Type != "AnnotationPage" {
-		t.Fatalf("existing painting AnnotationPage clobbered: %+v", cv.Items)
+		t.Fatalf("existing painting AnnotationPage altered: %+v", cv.Items)
 	}
-	if len(cv.Annotations) != 1 || cv.Annotations[0].Type != "AnnotationPage" ||
-		!strings.Contains(cv.Annotations[0].ID, "/annotations?canvas=") ||
-		!strings.Contains(cv.Annotations[0].ID, "fmt=w3c") {
-		t.Fatalf("canvas.annotations is not a w3c reference: %+v", cv.Annotations)
+	if len(cv.Annotations) != 0 {
+		t.Fatalf("canvas.annotations must be absent (MAE adapter is the load path): %+v", cv.Annotations)
 	}
 
-	// Follow the reference exactly as Mirador would.
-	_, ann, _ := viewerGet(t, ts, injectedRef(t, body))
+	// The single source of truth — the REST endpoint MAE's adapter calls —
+	// still returns the stored note.
+	_, ann, _ := viewerGet(t, ts, "/inst/ms/annotations?canvas="+canvasID)
 	if !strings.Contains(ann, `"AnnotationPage"`) || !strings.Contains(ann, "a scholarly marginal note") {
-		t.Fatalf("referenced endpoint did not return the W3C note:\n%s", ann)
-	}
-}
-
-// v2 (the real library: Gallica/Bodleian/e-codices) → canvas.otherContent
-// sc:AnnotationList reference; the fetched URL returns Open Annotation.
-func TestServer_InjectsAnnotationReference_V2(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, "gallica.bnf.fr", "ms")
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	const cid = "https://gallica.bnf.fr/iiif/ark:/12148/x/canvas/f1"
-	for n, c := range map[string]string{
-		"manifest.json": `{"@context":"http://iiif.io/api/presentation/2/context.json","@type":"sc:Manifest",
-		  "sequences":[{"@type":"sc:Sequence","canvases":[{"@id":"` + cid + `","@type":"sc:Canvas","width":10,"height":10,"images":[]}]}]}`,
-		"provenance.json":  `{"manifest_url":"https://gallica.bnf.fr/iiif/ark:/12148/x/manifest.json","images":[]}`,
-		"annotations.json": `{"type":"AnnotationPage","items":[{"id":"urn:n:1","type":"Annotation","motivation":"commenting","body":{"type":"TextualBody","value":"scribal correction"},"target":"` + cid + `#xywh=1,2,3,4"}]}`,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o600); err != nil {
-			t.Fatalf("write %s: %v", n, err)
-		}
-	}
-	ts := httptest.NewServer(New(root).Handler())
-	defer ts.Close()
-
-	_, body, _ := viewerGet(t, ts, "/gallica.bnf.fr/ms/manifest.json")
-	if strings.Contains(body, "scribal correction") {
-		t.Fatalf("v2 note must be referenced, not inlined:\n%s", body)
-	}
-	if !strings.Contains(body, "sc:AnnotationList") || !strings.Contains(body, "otherContent") ||
-		!strings.Contains(body, "fmt=oa") {
-		t.Fatalf("v2 otherContent reference missing:\n%s", body)
-	}
-	_, ann, _ := viewerGet(t, ts, injectedRef(t, body))
-	for _, want := range []string{"sc:AnnotationList", "oa:Annotation", `"on"`, "scribal correction"} {
-		if !strings.Contains(ann, want) {
-			t.Fatalf("v2 referenced endpoint missing %q:\n%s", want, ann)
-		}
+		t.Fatalf("annotation endpoint did not return the W3C note:\n%s", ann)
 	}
 }
 
@@ -187,11 +132,11 @@ func TestServer_CreateAnnotation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "annotations.json")); err != nil {
 		t.Fatalf("annotations.json not written: %v", err)
 	}
-	// ...and reachable via the reference Mirador fetches from the manifest.
-	_, mbody, _ := viewerGet(t, ts, "/inst/ms/manifest.json")
-	_, ann, _ := viewerGet(t, ts, injectedRef(t, mbody))
+	// ...and reachable via the REST endpoint MAE's storage adapter loads
+	// from (the single source of truth; the manifest is not injected).
+	_, ann, _ := viewerGet(t, ts, "/inst/ms/annotations?canvas="+cid)
 	if !strings.Contains(ann, "a created note") {
-		t.Fatalf("created annotation not reachable via the injected reference:\nmanifest=%s\nann=%s", mbody, ann)
+		t.Fatalf("created annotation not reachable via the annotation endpoint:\n%s", ann)
 	}
 
 	// POST to a path that is not a preserved bundle is refused.
@@ -298,6 +243,87 @@ func TestServer_AnnotationsREST(t *testing.T) {
 	// Unsupported method → 405.
 	if code, _ := do(http.MethodPatch, "/inst/ms/annotations", "{}"); code != http.StatusMethodNotAllowed {
 		t.Fatalf("PATCH = %d, want 405", code)
+	}
+}
+
+// TestServer_MAEAdapterCanvasContract pins the exact server contract the
+// vendored MAE storage adapter (viewer-src/src/adapter.js
+// HttpAnnotationAdapter) depends on: a region annotation in MAE's
+// SpecificResource/FragmentSelector shape POSTs successfully, and
+// `all()` — GET /<dir>/annotations?canvas=<id> — returns a well-formed
+// AnnotationPage whose `items` is filtered to that canvas with the region
+// selector preserved. If this breaks, MAE annotations silently never
+// surface in the viewer; a Go test catches it without a browser.
+func TestServer_MAEAdapterCanvasContract(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "inst", "ms")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const cidA = "https://inst.example/iiif/ms/canvas/p1"
+	const cidB = "https://inst.example/iiif/ms/canvas/p2"
+	for n, c := range map[string]string{
+		"manifest.json":   `{"@context":"http://iiif.io/api/presentation/3/context.json","id":"https://inst.example/iiif/ms/manifest.json","type":"Manifest","items":[{"id":"` + cidA + `","type":"Canvas","width":10,"height":10,"items":[]},{"id":"` + cidB + `","type":"Canvas","width":10,"height":10,"items":[]}]}`,
+		"provenance.json": `{"manifest_url":"https://inst.example/iiif/ms/manifest.json","images":[]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o600); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+	}
+	ts := httptest.NewServer(New(root).Handler())
+	defer ts.Close()
+
+	do := func(method, url, body string) (int, string) {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		req, _ := http.NewRequestWithContext(t.Context(), method, ts.URL+url, rd)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	// MAE's region output: a SpecificResource target with a
+	// FragmentSelector (what point-and-drag produces), one per canvas.
+	regionA := `{"type":"Annotation","motivation":"highlighting","target":{"source":"` + cidA + `","selector":{"type":"FragmentSelector","conformsTo":"http://www.w3.org/TR/media-frags/","value":"xywh=2,3,4,5"}}}`
+	if code, body := do(http.MethodPost, "/inst/ms/annotations", regionA); code != http.StatusCreated {
+		t.Fatalf("POST region A = %d %s", code, body)
+	}
+	if code, _ := do(http.MethodPost, "/inst/ms/annotations",
+		`{"type":"Annotation","motivation":"commenting","body":{"type":"TextualBody","value":"on p2"},"target":"`+cidB+`"}`); code != http.StatusCreated {
+		t.Fatalf("POST B not created")
+	}
+
+	// adapter.all() for canvas A: AnnotationPage, items filtered to A,
+	// region selector intact.
+	code, page := do(http.MethodGet, "/inst/ms/annotations?canvas="+cidA, "")
+	if code != http.StatusOK {
+		t.Fatalf("GET ?canvas=A = %d", code)
+	}
+	var got struct {
+		Type  string `json:"type"`
+		Items []struct {
+			Target json.RawMessage `json:"target"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(page), &got); err != nil {
+		t.Fatalf("adapter all() body not a JSON AnnotationPage: %v\n%s", err, page)
+	}
+	if got.Type != "AnnotationPage" {
+		t.Fatalf("adapter all() type = %q, want AnnotationPage", got.Type)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("?canvas=A returned %d items, want 1 (B must be excluded): %s", len(got.Items), page)
+	}
+	if !strings.Contains(string(got.Items[0].Target), "xywh=2,3,4,5") ||
+		!strings.Contains(string(got.Items[0].Target), "FragmentSelector") {
+		t.Fatalf("region selector not preserved through round-trip: %s", got.Items[0].Target)
 	}
 }
 
