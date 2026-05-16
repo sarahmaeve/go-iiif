@@ -241,6 +241,29 @@ func TestServer_ServesEmbeddedMiradorBundle(t *testing.T) {
 // TestServer_ViewerPageEmbedsMiradorPointedAtLocalManifest: GET /<dir>/
 // returns a Mirador page that loads the embedded bundle and instantiates the
 // viewer against this dir's local (serve-time-rewritten) manifest.
+// C2: the viewer carries an in-page annotation authoring affordance wired
+// to the C1 endpoint, alongside (not replacing) the Mirador wiring.
+func TestServer_ViewerHasAuthoringUI(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	_, body, _ := viewerGet(t, ts, "/cookbook-v3/")
+
+	for _, want := range []string{
+		`id="annotate-form"`,         // the authoring form
+		`id="annotate-text"`,         // the note/translation text field
+		`id="annotate-canvas"`,       // page (canvas) chooser
+		`id="annotate-kind"`,         // motivation chooser (note/translation/tag/bookmark/highlight)
+		"annotations",                // posts to the C1 endpoint
+		"/__viewer__/mirador.min.js", // Mirador still wired
+		"Mirador.viewer",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("viewer authoring UI missing %q; body=%s", want, body)
+		}
+	}
+}
+
 func TestServer_ViewerPageEmbedsMiradorPointedAtLocalManifest(t *testing.T) {
 	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
 	defer ts.Close()
