@@ -2,6 +2,8 @@ package serve
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -136,6 +138,80 @@ func TestServer_InjectsAnnotations_V2EndToEnd(t *testing.T) {
 	_, body, _ := viewerGet(t, ts, "/gallica.bnf.fr/ms/manifest.json")
 	if !strings.Contains(body, "scribal correction") || !strings.Contains(body, `"annotations"`) {
 		t.Fatalf("v2 annotation not injected end-to-end:\n%s", body)
+	}
+}
+
+// C1: POST an annotation → it is stored beside the bundle and is then
+// injected into the served manifest (the full author→store→display loop,
+// offline, no source contact).
+func TestServer_CreateAnnotation(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "inst", "ms")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const cid = "https://inst.example/iiif/ms/canvas/p1"
+	for n, c := range map[string]string{
+		"manifest.json":   `{"@context":"http://iiif.io/api/presentation/3/context.json","id":"https://inst.example/iiif/ms/manifest.json","type":"Manifest","items":[{"id":"` + cid + `","type":"Canvas","width":10,"height":10,"items":[]}]}`,
+		"provenance.json": `{"manifest_url":"https://inst.example/iiif/ms/manifest.json","images":[]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o600); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+	}
+	ts := httptest.NewServer(New(root).Handler())
+	defer ts.Close()
+
+	post := func(body string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			ts.URL+"/inst/ms/annotations", strings.NewReader(body))
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	// Malformed JSON and missing target are rejected.
+	if code, _ := post(`not json`); code != http.StatusBadRequest {
+		t.Fatalf("bad json = %d, want 400", code)
+	}
+	if code, _ := post(`{"type":"Annotation","body":{"type":"TextualBody","value":"x"}}`); code != http.StatusBadRequest {
+		t.Fatalf("missing target = %d, want 400", code)
+	}
+
+	// A valid annotation is accepted...
+	code, respBody := post(`{"type":"Annotation","motivation":"commenting","body":{"type":"TextualBody","value":"a created note"},"target":"` + cid + `#xywh=1,2,3,4"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d (%s), want 201", code, respBody)
+	}
+	if !strings.Contains(respBody, `"id"`) {
+		t.Fatalf("response should echo the stored annotation with an assigned id: %s", respBody)
+	}
+
+	// ...persisted to annotations.json...
+	if _, err := os.Stat(filepath.Join(dir, "annotations.json")); err != nil {
+		t.Fatalf("annotations.json not written: %v", err)
+	}
+	// ...and now injected into the served manifest.
+	_, mbody, _ := viewerGet(t, ts, "/inst/ms/manifest.json")
+	if !strings.Contains(mbody, "a created note") || !strings.Contains(mbody, `"annotations"`) {
+		t.Fatalf("created annotation not displayed via the manifest:\n%s", mbody)
+	}
+
+	// POST to a path that is not a preserved bundle is refused.
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		ts.URL+"/not/a/bundle/annotations", strings.NewReader(`{"type":"Annotation","target":"x"}`))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST nonbundle: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST to non-bundle = %d, want 404", resp.StatusCode)
 	}
 }
 

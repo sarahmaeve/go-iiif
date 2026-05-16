@@ -6,6 +6,8 @@ package serve
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +42,10 @@ func (s *Server) Handler() http.Handler {
 	files := http.FileServer(http.Dir(s.root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := path.Clean(r.URL.Path)
+		if r.Method == http.MethodPost && strings.HasSuffix(clean, "/annotations") {
+			s.createAnnotation(w, r, clean)
+			return
+		}
 		switch {
 		case clean == miradorRoute:
 			s.serveBundle(w)
@@ -106,6 +112,66 @@ func (s *Server) serveInfoJSON(w http.ResponseWriter, r *http.Request, files htt
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+}
+
+// newAnnotationID mints an opaque, collision-free id for a client-created
+// annotation that didn't supply one.
+func newAnnotationID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil { // crypto/rand failure is unrecoverable; fall back to time
+		return fmt.Sprintf("urn:annotation:%d", time.Now().UnixNano())
+	}
+	return "urn:uuid:" + hex.EncodeToString(b[:])
+}
+
+// createAnnotation appends a client-authored W3C annotation to the bundle's
+// offline store. The server is loopback-only and single-user, so there is
+// no auth — same trust model as the rest of serving. The new annotation is
+// then displayed via the existing serve-time injection (no reload needed
+// for the data; the viewer must re-fetch the manifest to see it).
+func (s *Server) createAnnotation(w http.ResponseWriter, r *http.Request, clean string) {
+	dir, ok := s.hasManifest(strings.TrimSuffix(clean, "/annotations"))
+	if !ok {
+		http.NotFound(w, r) // only annotate a real preserved bundle
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "annotation too large or unreadable", http.StatusBadRequest)
+		return
+	}
+	var a annotation.Annotation
+	if err := json.Unmarshal(body, &a); err != nil {
+		http.Error(w, "invalid annotation JSON", http.StatusBadRequest)
+		return
+	}
+	if len(a.Target) == 0 || a.CanvasID() == "" {
+		http.Error(w, "annotation needs a Canvas target", http.StatusBadRequest)
+		return
+	}
+	if a.Type == "" {
+		a.Type = "Annotation"
+	}
+	if a.ID == "" {
+		a.ID = newAnnotationID()
+	}
+
+	annDir := filepath.Join(s.root, filepath.FromSlash(dir))
+	page, err := annotation.Load(annDir)
+	if err != nil {
+		http.Error(w, "could not read annotation store", http.StatusInternalServerError)
+		return
+	}
+	page.Items = append(page.Items, a)
+	if err := annotation.Save(annDir, page); err != nil {
+		http.Error(w, "could not save annotation", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(a) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
 // serveManifest serves the preserved manifest with image URLs rewritten to
