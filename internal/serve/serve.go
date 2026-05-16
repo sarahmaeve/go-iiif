@@ -42,8 +42,8 @@ func (s *Server) Handler() http.Handler {
 	files := http.FileServer(http.Dir(s.root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := path.Clean(r.URL.Path)
-		if r.Method == http.MethodPost && strings.HasSuffix(clean, "/annotations") {
-			s.createAnnotation(w, r, clean)
+		if strings.HasSuffix(clean, "/annotations") {
+			s.handleAnnotations(w, r, clean)
 			return
 		}
 		switch {
@@ -124,54 +124,113 @@ func newAnnotationID() string {
 	return "urn:uuid:" + hex.EncodeToString(b[:])
 }
 
-// createAnnotation appends a client-authored W3C annotation to the bundle's
-// offline store. The server is loopback-only and single-user, so there is
-// no auth — same trust model as the rest of serving. The new annotation is
-// then displayed via the existing serve-time injection (no reload needed
-// for the data; the viewer must re-fetch the manifest to see it).
-func (s *Server) createAnnotation(w http.ResponseWriter, r *http.Request, clean string) {
-	dir, ok := s.hasManifest(strings.TrimSuffix(clean, "/annotations"))
-	if !ok {
-		http.NotFound(w, r) // only annotate a real preserved bundle
-		return
-	}
-
+// readAnnotation parses (size-capped) the request body into an annotation,
+// requiring a Canvas target. It writes the 400 itself and returns ok=false
+// on any problem.
+func (s *Server) readAnnotation(w http.ResponseWriter, r *http.Request) (annotation.Annotation, bool) {
+	var a annotation.Annotation
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "annotation too large or unreadable", http.StatusBadRequest)
-		return
+		return a, false
 	}
-	var a annotation.Annotation
 	if err := json.Unmarshal(body, &a); err != nil {
 		http.Error(w, "invalid annotation JSON", http.StatusBadRequest)
-		return
+		return a, false
 	}
 	if len(a.Target) == 0 || a.CanvasID() == "" {
 		http.Error(w, "annotation needs a Canvas target", http.StatusBadRequest)
-		return
+		return a, false
 	}
 	if a.Type == "" {
 		a.Type = "Annotation"
 	}
-	if a.ID == "" {
-		a.ID = newAnnotationID()
-	}
+	return a, true
+}
 
+// handleAnnotations is the per-bundle annotation REST surface backing the
+// offline store (and the Mirador storage adapter): GET list / POST create /
+// PUT update / DELETE. Loopback-only, single-user, so no auth — the same
+// trust model as the rest of serving. Mutations are displayed via the
+// existing serve-time injection (the viewer re-fetches the manifest to see
+// them).
+func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean string) {
+	dir, ok := s.hasManifest(strings.TrimSuffix(clean, "/annotations"))
+	if !ok {
+		http.NotFound(w, r) // only a real preserved bundle is annotatable
+		return
+	}
 	annDir := filepath.Join(s.root, filepath.FromSlash(dir))
-	page, err := annotation.Load(annDir)
-	if err != nil {
-		http.Error(w, "could not read annotation store", http.StatusInternalServerError)
-		return
-	}
-	page.Items = append(page.Items, a)
-	if err := annotation.Save(annDir, page); err != nil {
-		http.Error(w, "could not save annotation", http.StatusInternalServerError)
-		return
-	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(a) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+	switch r.Method {
+	case http.MethodGet:
+		page, err := annotation.Load(annDir)
+		if err != nil {
+			http.Error(w, "could not read annotation store", http.StatusInternalServerError)
+			return
+		}
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		page.ID = scheme + "://" + r.Host + clean // AnnotationPage id == its URL
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(page) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+
+	case http.MethodPost:
+		a, ok := s.readAnnotation(w, r)
+		if !ok {
+			return
+		}
+		if a.ID == "" {
+			a.ID = newAnnotationID()
+		}
+		if err := annotation.Add(annDir, a); err != nil {
+			http.Error(w, "could not save annotation", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(a) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+
+	case http.MethodPut:
+		a, ok := s.readAnnotation(w, r)
+		if !ok {
+			return
+		}
+		if a.ID == "" {
+			http.Error(w, "update needs the annotation id", http.StatusBadRequest)
+			return
+		}
+		switch err := annotation.Update(annDir, a); {
+		case errors.Is(err, annotation.ErrNotFound):
+			http.NotFound(w, r)
+		case err != nil:
+			http.Error(w, "could not update annotation", http.StatusInternalServerError)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(a) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+		}
+
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			http.Error(w, "delete needs ?id=", http.StatusBadRequest)
+			return
+		}
+		switch err := annotation.Delete(annDir, id); {
+		case errors.Is(err, annotation.ErrNotFound):
+			http.NotFound(w, r)
+		case err != nil:
+			http.Error(w, "could not delete annotation", http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+
+	default:
+		w.Header().Set("Allow", "GET, POST, PUT, DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // serveManifest serves the preserved manifest with image URLs rewritten to

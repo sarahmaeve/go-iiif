@@ -1,6 +1,8 @@
 package annotation
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,6 +68,60 @@ func TestLocalStore_RoundTrip(t *testing.T) {
 	}
 	if len(got.Items) != 2 || got.Items[0].ID != "urn:a:1" || got.Items[1].CanvasID() != "https://ex/iiif/canvas/p2" {
 		t.Fatalf("round-trip items wrong: %+v", got.Items)
+	}
+}
+
+func TestStore_AddUpdateDelete(t *testing.T) {
+	dir := t.TempDir()
+
+	a1 := Annotation{ID: "urn:a:1", Type: "Annotation", Target: []byte(`"c/p1"`),
+		Body: []byte(`{"type":"TextualBody","value":"first"}`)}
+	a2 := Annotation{ID: "urn:a:2", Type: "Annotation", Target: []byte(`"c/p2"`),
+		Body: []byte(`{"type":"TextualBody","value":"second"}`)}
+
+	if err := Add(dir, a1); err != nil {
+		t.Fatalf("Add a1: %v", err)
+	}
+	if err := Add(dir, a2); err != nil {
+		t.Fatalf("Add a2: %v", err)
+	}
+	if p, _ := Load(dir); len(p.Items) != 2 {
+		t.Fatalf("after 2 Add, items = %d, want 2", len(p.Items))
+	}
+
+	// Update replaces the item with the same id, in place.
+	a1u := a1
+	a1u.Body = []byte(`{"type":"TextualBody","value":"first edited"}`)
+	if err := Update(dir, a1u); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	p, _ := Load(dir)
+	if len(p.Items) != 2 || p.Items[0].ID != "urn:a:1" {
+		t.Fatalf("Update changed structure: %+v", p.Items)
+	}
+	var bd struct{ Value string }
+	if err := json.Unmarshal(p.Items[0].Body, &bd); err != nil || bd.Value != "first edited" {
+		t.Fatalf("Update did not replace a1's body in place: value=%q err=%v", bd.Value, err)
+	}
+
+	// Update of an unknown id is ErrNotFound (not a silent append).
+	if err := Update(dir, Annotation{ID: "urn:nope", Target: []byte(`"c/p9"`)}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update unknown = %v, want ErrNotFound", err)
+	}
+	if p, _ := Load(dir); len(p.Items) != 2 {
+		t.Fatalf("failed Update must not change the store (items=%d)", len(p.Items))
+	}
+
+	// Delete removes by id; deleting an absent id is ErrNotFound.
+	if err := Delete(dir, "urn:a:1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	p, _ = Load(dir)
+	if len(p.Items) != 1 || p.Items[0].ID != "urn:a:2" {
+		t.Fatalf("Delete did not remove a1: %+v", p.Items)
+	}
+	if err := Delete(dir, "urn:a:1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete absent = %v, want ErrNotFound", err)
 	}
 }
 

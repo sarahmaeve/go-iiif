@@ -224,6 +224,100 @@ func TestServer_CreateAnnotation(t *testing.T) {
 	}
 }
 
+// Option A backend: the full REST surface a storage adapter needs —
+// list (GET), create (POST), update (PUT), delete (DELETE).
+func TestServer_AnnotationsREST(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "inst", "ms")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const cid = "https://inst.example/iiif/ms/canvas/p1"
+	for n, c := range map[string]string{
+		"manifest.json":   `{"@context":"http://iiif.io/api/presentation/3/context.json","id":"https://inst.example/iiif/ms/manifest.json","type":"Manifest","items":[{"id":"` + cid + `","type":"Canvas","width":10,"height":10,"items":[]}]}`,
+		"provenance.json": `{"manifest_url":"https://inst.example/iiif/ms/manifest.json","images":[]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o600); err != nil {
+			t.Fatalf("write %s: %v", n, err)
+		}
+	}
+	ts := httptest.NewServer(New(root).Handler())
+	defer ts.Close()
+
+	do := func(method, url, body string) (int, string) {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		req, _ := http.NewRequestWithContext(t.Context(), method, ts.URL+url, rd)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, url, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+
+	// Empty list initially: a well-formed AnnotationPage.
+	code, list := do(http.MethodGet, "/inst/ms/annotations", "")
+	if code != http.StatusOK || !strings.Contains(list, `"AnnotationPage"`) {
+		t.Fatalf("GET empty list = %d %s", code, list)
+	}
+
+	// Create two.
+	code, a1 := do(http.MethodPost, "/inst/ms/annotations",
+		`{"type":"Annotation","motivation":"commenting","body":{"type":"TextualBody","value":"one"},"target":"`+cid+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("POST = %d %s", code, a1)
+	}
+	var created struct{ ID string }
+	if err := json.Unmarshal([]byte(a1), &created); err != nil || created.ID == "" {
+		t.Fatalf("POST response has no id: %s", a1)
+	}
+	do(http.MethodPost, "/inst/ms/annotations",
+		`{"type":"Annotation","motivation":"tagging","body":{"type":"TextualBody","value":"rubric"},"target":"`+cid+`"}`)
+
+	code, list = do(http.MethodGet, "/inst/ms/annotations", "")
+	if code != http.StatusOK || strings.Count(list, `"target"`) != 2 {
+		t.Fatalf("GET list after 2 creates = %d, want 2 items: %s", code, list)
+	}
+
+	// Update the first.
+	code, _ = do(http.MethodPut, "/inst/ms/annotations",
+		`{"id":"`+created.ID+`","type":"Annotation","motivation":"commenting","body":{"type":"TextualBody","value":"one edited"},"target":"`+cid+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("PUT = %d", code)
+	}
+	_, list = do(http.MethodGet, "/inst/ms/annotations", "")
+	if !strings.Contains(list, "one edited") {
+		t.Fatalf("PUT did not persist: %s", list)
+	}
+	// PUT an unknown id → 404.
+	if code, _ := do(http.MethodPut, "/inst/ms/annotations", `{"id":"urn:nope","type":"Annotation","target":"`+cid+`"}`); code != http.StatusNotFound {
+		t.Fatalf("PUT unknown = %d, want 404", code)
+	}
+
+	// Delete the first; absent → 404.
+	code, _ = do(http.MethodDelete, "/inst/ms/annotations?id="+created.ID, "")
+	if code != http.StatusNoContent {
+		t.Fatalf("DELETE = %d, want 204", code)
+	}
+	if code, _ := do(http.MethodDelete, "/inst/ms/annotations?id="+created.ID, ""); code != http.StatusNotFound {
+		t.Fatalf("DELETE absent = %d, want 404", code)
+	}
+	_, list = do(http.MethodGet, "/inst/ms/annotations", "")
+	if strings.Count(list, `"target"`) != 1 {
+		t.Fatalf("after delete want 1 item: %s", list)
+	}
+
+	// Unsupported method → 405.
+	if code, _ := do(http.MethodPatch, "/inst/ms/annotations", "{}"); code != http.StatusMethodNotAllowed {
+		t.Fatalf("PATCH = %d, want 405", code)
+	}
+}
+
 // No annotations.json → manifest served byte-for-byte as the rewrite left
 // it (the feature must be zero-impact when unused).
 func TestServer_NoAnnotationsNoInjection(t *testing.T) {

@@ -7,11 +7,17 @@ package annotation
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ErrNotFound is returned by Update/Delete when no stored annotation has
+// the given id (so a failed edit/delete is explicit, not a silent append
+// or no-op).
+var ErrNotFound = errors.New("annotation: not found")
 
 // FileName is the per-bundle annotation store, a sibling of manifest.json.
 const FileName = "annotations.json"
@@ -133,4 +139,50 @@ func Save(dir string, p Page) error {
 		return fmt.Errorf("annotation: finalizing: %w", err)
 	}
 	return nil
+}
+
+// Add appends a (already-id'd) annotation to dir's store and persists it.
+func Add(dir string, a Annotation) error {
+	p, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	p.Items = append(p.Items, a)
+	return Save(dir, p)
+}
+
+// Update replaces the stored annotation whose id equals a.ID, in place.
+// ErrNotFound (and no write) if none matches — a failed edit is explicit.
+func Update(dir string, a Annotation) error {
+	p, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	for i := range p.Items {
+		if p.Items[i].ID == a.ID {
+			p.Items[i] = a
+			return Save(dir, p)
+		}
+	}
+	return ErrNotFound
+}
+
+// Delete removes the stored annotation with the given id. ErrNotFound (and
+// no write) if none matches.
+func Delete(dir, id string) error {
+	p, err := Load(dir)
+	if err != nil {
+		return err
+	}
+	kept := p.Items[:0:0]
+	for _, a := range p.Items {
+		if a.ID != id {
+			kept = append(kept, a)
+		}
+	}
+	if len(kept) == len(p.Items) {
+		return ErrNotFound
+	}
+	p.Items = kept
+	return Save(dir, p)
 }
