@@ -106,8 +106,16 @@ func TestInjectAnnotations_V2Canvas(t *testing.T) {
 	if out == nil {
 		t.Fatal("injectAnnotations returned nil for a valid v2 manifest")
 	}
-	if !strings.Contains(string(out), "hand B begins here") {
-		t.Fatalf("v2 canvas did not get the annotation:\n%s", out)
+	// Mirador 4 reads v2 annotations from canvas.otherContent
+	// (sc:AnnotationList of oa:Annotation), NOT canvas.annotations.
+	s := string(out)
+	for _, want := range []string{"otherContent", "sc:AnnotationList", "oa:Annotation", `"on"`, "hand B begins here"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("v2 injection missing %q (must be Open Annotation):\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, `"annotations"`) {
+		t.Fatalf("v2 canvas must not use the P3 annotations key (Mirador ignores it for v2):\n%s", s)
 	}
 }
 
@@ -136,8 +144,9 @@ func TestServer_InjectsAnnotations_V2EndToEnd(t *testing.T) {
 	ts := httptest.NewServer(New(root).Handler())
 	defer ts.Close()
 	_, body, _ := viewerGet(t, ts, "/gallica.bnf.fr/ms/manifest.json")
-	if !strings.Contains(body, "scribal correction") || !strings.Contains(body, `"annotations"`) {
-		t.Fatalf("v2 annotation not injected end-to-end:\n%s", body)
+	if !strings.Contains(body, "scribal correction") ||
+		!strings.Contains(body, "sc:AnnotationList") || !strings.Contains(body, "otherContent") {
+		t.Fatalf("v2 annotation not injected as Open Annotation otherContent:\n%s", body)
 	}
 }
 

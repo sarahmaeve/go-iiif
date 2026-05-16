@@ -79,12 +79,74 @@ func isCanvas(m map[string]any) bool {
 	return t == "sc:Canvas"
 }
 
+// appendArr appends item to existing if it is a JSON array, else starts a
+// new one — so an existing annotations/otherContent list is never clobbered.
+func appendArr(existing, item any) []any {
+	if ex, ok := existing.([]any); ok {
+		return append(ex, item)
+	}
+	return []any{item}
+}
+
+// toGeneric round-trips a stored annotation through JSON into the decoded
+// document's any-graph so it embeds cleanly.
+func toGeneric(a annotation.Annotation) (any, bool) {
+	b, err := json.Marshal(a)
+	if err != nil {
+		return nil, false
+	}
+	var m any
+	return m, json.Unmarshal(b, &m) == nil
+}
+
+// toOpenAnnotation converts a stored W3C annotation to the IIIF
+// Presentation 2 Open Annotation shape Mirador reads from a v2 canvas's
+// otherContent (sc:AnnotationList). FragmentSelector/string targets carry
+// over via `on`; the text body becomes a dctypes:Text resource.
+func toOpenAnnotation(a annotation.Annotation) map[string]any {
+	on := ""
+	if json.Unmarshal(a.Target, &on) != nil || on == "" {
+		on = a.CanvasID()
+	}
+	mot := "oa:commenting"
+	if s, ok := a.Motivation.(string); ok && s != "" {
+		if strings.Contains(s, ":") {
+			mot = s
+		} else {
+			mot = "oa:" + s
+		}
+	}
+	oa := map[string]any{"@type": "oa:Annotation", "motivation": mot, "on": on}
+	if a.ID != "" {
+		oa["@id"] = a.ID
+	}
+	var bd struct {
+		Value    string `json:"value"`
+		Format   string `json:"format"`
+		Language string `json:"language"`
+	}
+	if json.Unmarshal(a.Body, &bd) == nil && bd.Value != "" {
+		res := map[string]any{"@type": "dctypes:Text", "chars": bd.Value}
+		res["format"] = bd.Format
+		if bd.Format == "" {
+			res["format"] = "text/plain"
+		}
+		if bd.Language != "" {
+			res["language"] = bd.Language
+		}
+		oa["resource"] = []any{res}
+	}
+	return oa
+}
+
 // injectAnnotations attaches the user's stored annotations to the Canvases
-// they target, as an embedded W3C AnnotationPage in canvas.annotations
-// (inline items — no extra fetch, fully offline). Existing annotation pages
-// are appended to, not clobbered. Returns nil (no change) on any problem —
-// annotations must never break serving. Canvas ids are matched on the
-// original id, which the image rewrite leaves untouched.
+// they target, in the shape that manifest's Presentation version makes
+// Mirador read: v3 → an embedded W3C AnnotationPage in canvas.annotations;
+// v2 → an sc:AnnotationList of oa:Annotation in canvas.otherContent (the v3
+// `annotations` key is ignored by Mirador for v2). Inline — no extra fetch,
+// fully offline. Existing lists are appended to, not clobbered. Returns nil
+// (no change) on any problem — annotations must never break serving. Canvas
+// ids match the original id, which the image rewrite leaves untouched.
 func injectAnnotations(manifestJSON []byte, page annotation.Page, base string) []byte {
 	by := page.ByCanvas()
 	if len(by) == 0 {
@@ -104,26 +166,25 @@ func injectAnnotations(manifestJSON []byte, page annotation.Page, base string) [
 				if _, id := nodeID(v); id != "" {
 					if anns := by[id]; len(anns) > 0 {
 						n++
-						items := make([]any, 0, len(anns))
-						for _, a := range anns {
-							b, err := json.Marshal(a)
-							if err != nil {
-								continue
+						pid := fmt.Sprintf("%s/annotations/%d", strings.TrimRight(base, "/"), n)
+						if t, _ := v["type"].(string); t == "Canvas" {
+							items := make([]any, 0, len(anns))
+							for _, a := range anns {
+								if m, ok := toGeneric(a); ok {
+									items = append(items, m)
+								}
 							}
-							var m any
-							if json.Unmarshal(b, &m) == nil {
-								items = append(items, m)
-							}
-						}
-						ap := map[string]any{
-							"id":    fmt.Sprintf("%s/annotations/%d", strings.TrimRight(base, "/"), n),
-							"type":  "AnnotationPage",
-							"items": items,
-						}
-						if ex, ok := v["annotations"].([]any); ok {
-							v["annotations"] = append(ex, ap)
+							v["annotations"] = appendArr(v["annotations"], map[string]any{
+								"id": pid, "type": "AnnotationPage", "items": items,
+							})
 						} else {
-							v["annotations"] = []any{ap}
+							res := make([]any, 0, len(anns))
+							for _, a := range anns {
+								res = append(res, toOpenAnnotation(a))
+							}
+							v["otherContent"] = appendArr(v["otherContent"], map[string]any{
+								"@id": pid, "@type": "sc:AnnotationList", "resources": res,
+							})
 						}
 					}
 				}

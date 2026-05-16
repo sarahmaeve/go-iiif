@@ -218,7 +218,13 @@ details.annotate[open]>summary::before{content:"\2013 "}
     }
     cs.forEach(function (c, n) {
       var o = document.createElement('option');
-      o.value = c.id; o.textContent = c.label || ('p. ' + (n + 1));
+      o.value = c.id;
+      // Always show a sequence number; many manifests label every canvas
+      // "NP" (no pagination) or leave it blank — append the label only
+      // when it actually says something.
+      var lb = (c.label || '').trim();
+      o.textContent = 'p. ' + (n + 1) +
+        (lb && lb.toUpperCase() !== 'NP' ? ' — ' + lb : '');
       sel.appendChild(o);
     });
     if (!cs.length) { st.textContent = 'no pages found'; st.className = 'status err'; }
