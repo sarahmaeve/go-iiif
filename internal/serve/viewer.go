@@ -96,17 +96,44 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 </html>
 `))
 
-// viewerTmpl renders Mirador against this dir's local (serve-time-rewritten)
-// manifest. {{.}} is the dir slug; html/template escapes it for both the
-// HTML and the JS string contexts.
+// viewerTmpl renders a quiet editorial masthead (kicker, title, source,
+// back-to-catalogue) above a full-bleed Mirador. The data is a
+// manifestSummary; html/template escapes each field for its context. The
+// manifest path is passed via a data-attribute (HTML), never interpolated
+// into the JS string, to avoid html/template's "\/" JS-string escaping.
 var viewerTmpl = template.Must(template.New("viewer").Parse(`<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.}} — Mirador</title>
-<style>html,body,#mirador{margin:0;height:100%}</style>
+<title>{{.Title}} — preserved</title>
+<style>
+@font-face{font-family:"Newsreader";font-weight:700;font-display:swap;src:url("` + fontsRoutePrefix + `newsreader-700.woff2") format("woff2")}
+@font-face{font-family:"IBM Plex Mono";font-weight:600;font-display:swap;src:url("` + fontsRoutePrefix + `ibm-plex-mono-600.woff2") format("woff2")}
+:root{--bg:#f4efe8;--text:#1c1917;--muted:#6a625b;--border:#c9bfb2;--accent:#8b2332;--primary:#1f2933}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;background:var(--bg);
+ font-family:"Source Serif 4",Georgia,serif;color:var(--text)}
+header.masthead{padding:12px 24px;border-bottom:2px solid var(--primary);
+ box-shadow:0 1px 0 rgba(28,25,23,.06)}
+.top{display:flex;justify-content:space-between;align-items:baseline;gap:16px}
+.kicker,.back,.from{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+ font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--muted)}
+.kicker{margin:0}
+.back{text-decoration:none;white-space:nowrap}
+.back:hover{color:var(--accent)}
+h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.35rem;line-height:1.15;
+ color:var(--primary);margin:5px 0 0}
+.from{letter-spacing:.1em;margin-left:.6rem}
+.from a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--border)}
+.from a:hover{color:var(--accent)}
+#mirador{flex:1;min-height:0}
+</style>
 <body>
-<div id="mirador" data-manifest="/{{.}}/manifest.json"></div>
+<header class="masthead">
+<div class="top"><p class="kicker">Preserved manuscript · offline</p><a class="back" href="/">&larr; Catalogue</a></div>
+<h1>{{.Title}}<span class="from">from <a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a></span></h1>
+</header>
+<div id="mirador" data-manifest="/{{.Dir}}/manifest.json"></div>
 <script src="` + miradorRoute + `"></script>
 <script>
   Mirador.viewer({
@@ -146,40 +173,47 @@ func (s *Server) manifestSummaries() []manifestSummary {
 		if rerr != nil || rel == "." {
 			return nil //nolint:nilerr // un-relativizable entry: skip it, keep indexing the rest
 		}
-		ms := manifestSummary{Dir: filepath.ToSlash(rel), Languages: "—", Institution: "—"}
-
-		mb, _ := os.ReadFile(p) //nolint:gosec // G304: p is a manifest.json under the served root
-		ms.Title = metadata.Title(mb)
-		if ms.Title == "" {
-			ms.Title = ms.Dir
-		}
-
-		var prov struct {
-			ManifestURL string     `json:"manifest_url"`
-			Images      []struct{} `json:"images"`
-		}
-		if pb, perr := os.ReadFile(filepath.Join(dir, "provenance.json")); perr == nil { //nolint:gosec // G304: sibling of a served manifest
-			_ = json.Unmarshal(pb, &prov)
-		}
-		ms.Pages = len(prov.Images)
-		ms.RecordURL = prov.ManifestURL
-		host := ""
-		if u, uerr := url.Parse(prov.ManifestURL); uerr == nil && u.Host != "" {
-			host = u.Host
-			ms.Institution = host
-		}
-		if entries, eerr := metadata.ExtractMetadata(mb); eerr == nil {
-			rec := metadata.BuildWorkRecord(entries, institution.Builtin().For(host).FieldMapping)
-			if len(rec.Langs) > 0 {
-				ms.Languages = strings.Join(rec.Langs, ", ")
-			}
-		}
-		ms.Size = dirSize(dir)
-		out = append(out, ms)
+		out = append(out, summaryFor(dir, filepath.ToSlash(rel)))
 		return nil
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
 	return out
+}
+
+// summaryFor derives one manifestSummary from a preserved bundle dir
+// (absDir) and its root-relative slash slug. Shared by the index and the
+// per-manuscript viewer header. Unreadable pieces degrade to placeholders.
+func summaryFor(absDir, slug string) manifestSummary {
+	ms := manifestSummary{Dir: slug, Languages: "—", Institution: "—"}
+
+	mb, _ := os.ReadFile(filepath.Join(absDir, "manifest.json")) //nolint:gosec // G304: manifest under the served root
+	ms.Title = metadata.Title(mb)
+	if ms.Title == "" {
+		ms.Title = ms.Dir
+	}
+
+	var prov struct {
+		ManifestURL string     `json:"manifest_url"`
+		Images      []struct{} `json:"images"`
+	}
+	if pb, perr := os.ReadFile(filepath.Join(absDir, "provenance.json")); perr == nil { //nolint:gosec // G304: sibling of a served manifest
+		_ = json.Unmarshal(pb, &prov)
+	}
+	ms.Pages = len(prov.Images)
+	ms.RecordURL = prov.ManifestURL
+	host := ""
+	if u, uerr := url.Parse(prov.ManifestURL); uerr == nil && u.Host != "" {
+		host = u.Host
+		ms.Institution = host
+	}
+	if entries, eerr := metadata.ExtractMetadata(mb); eerr == nil {
+		rec := metadata.BuildWorkRecord(entries, institution.Builtin().For(host).FieldMapping)
+		if len(rec.Langs) > 0 {
+			ms.Languages = strings.Join(rec.Langs, ", ")
+		}
+	}
+	ms.Size = dirSize(absDir)
+	return ms
 }
 
 // dirSize is the estimated on-disk size of a preserved bundle (images +
@@ -206,8 +240,9 @@ func (s *Server) serveIndex(w http.ResponseWriter) {
 
 // serveViewer writes the Mirador page for dir (a verified preserved slug).
 func (s *Server) serveViewer(w http.ResponseWriter, dir string) {
+	abs := filepath.Join(s.root, filepath.FromSlash(dir))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = viewerTmpl.Execute(w, dir) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+	_ = viewerTmpl.Execute(w, summaryFor(abs, dir)) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
 // serveBundle writes the embedded Mirador UMD bundle.
