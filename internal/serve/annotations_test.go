@@ -9,24 +9,33 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/sarahmaeve/go-iiif/internal/annotation"
 )
 
-// annPageJSON builds an annotation.Page from one raw annotation object.
-func annPageJSON(t *testing.T, item string) annotation.Page {
+// injectedRef pulls the per-canvas annotation endpoint URL Mirador will
+// fetch out of a served manifest (the path+query, for viewerGet).
+func injectedRef(t *testing.T, manifestBody string) string {
 	t.Helper()
-	var a annotation.Annotation
-	if err := json.Unmarshal([]byte(item), &a); err != nil {
-		t.Fatalf("bad annotation fixture: %v", err)
+	k := strings.Index(manifestBody, "/annotations?canvas=")
+	if k < 0 {
+		t.Fatalf("no annotation reference injected:\n%s", manifestBody)
 	}
-	return annotation.Page{Type: "AnnotationPage", Items: []annotation.Annotation{a}}
+	s := strings.LastIndex(manifestBody[:k], `"`) + 1
+	e := strings.Index(manifestBody[k:], `"`) + k
+	full := manifestBody[s:e]
+	// strip scheme://host (keep the full /<dir>/annotations?… path+query)
+	if i := strings.Index(full, "://"); i >= 0 {
+		if j := strings.Index(full[i+3:], "/"); j >= 0 {
+			return full[i+3+j:]
+		}
+	}
+	return full
 }
 
-// A user's offline annotations (annotations.json beside the bundle) must be
-// injected into the served manifest's matching Canvas so Mirador displays
-// them — no extra fetch, no source contact.
-func TestServer_InjectsAnnotationsIntoCanvas(t *testing.T) {
+// Mirador loads annotations by FETCHING the AnnotationPage/AnnotationList
+// by id (it ignores inline items/resources). So the served manifest must
+// carry a *reference* to our per-canvas endpoint, and that endpoint must
+// return the note. v3 → canvas.annotations (AnnotationPage, fmt=w3c).
+func TestServer_InjectsAnnotationReference_V3(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "inst", "ms")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -38,43 +47,30 @@ func TestServer_InjectsAnnotationsIntoCanvas(t *testing.T) {
 	  "items":[{"id":"` + canvasID + `","type":"Canvas","height":100,"width":80,
 	    "items":[{"id":"https://inst.example/p1/ap","type":"AnnotationPage","items":[
 	      {"id":"https://inst.example/p1/anno","type":"Annotation","motivation":"painting",
-	       "body":{"id":"https://inst.example/iiif/img/p1/full/max/0/default.jpg","type":"Image","format":"image/jpeg"},
+	       "body":{"id":"https://inst.example/img.jpg","type":"Image","format":"image/jpeg"},
 	       "target":"` + canvasID + `"}]}]}]}`
-	prov := `{"manifest_url":"https://inst.example/iiif/ms/manifest.json","images":[{"file":"0001.jpg","source_url":"https://inst.example/iiif/img/p1/full/max/0/default.jpg"}]}`
-	anns := `{"@context":"http://www.w3.org/ns/anno.jsonld","type":"AnnotationPage","items":[
-	  {"id":"urn:note:1","type":"Annotation","motivation":"commenting",
-	   "body":{"type":"TextualBody","value":"a scholarly marginal note","format":"text/plain"},
-	   "target":"` + canvasID + `#xywh=10,10,40,20"}]}`
-	for name, content := range map[string]string{
-		"manifest.json": manifest, "provenance.json": prov, "annotations.json": anns,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
+	prov := `{"manifest_url":"https://inst.example/iiif/ms/manifest.json","images":[]}`
+	anns := `{"type":"AnnotationPage","items":[{"id":"urn:note:1","type":"Annotation",
+	  "motivation":"commenting","body":{"type":"TextualBody","value":"a scholarly marginal note"},
+	  "target":"` + canvasID + `#xywh=10,10,40,20"}]}`
+	for n, c := range map[string]string{"manifest.json": manifest, "provenance.json": prov, "annotations.json": anns} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o600); err != nil {
+			t.Fatalf("write %s: %v", n, err)
 		}
 	}
-
 	ts := httptest.NewServer(New(root).Handler())
 	defer ts.Close()
+
 	_, body, _ := viewerGet(t, ts, "/inst/ms/manifest.json")
-
-	if !strings.Contains(body, "a scholarly marginal note") {
-		t.Fatalf("user annotation not injected into served manifest:\n%s", body)
+	// A reference, NOT the inline note text.
+	if strings.Contains(body, "a scholarly marginal note") {
+		t.Fatalf("note must be referenced, not inlined, into the manifest:\n%s", body)
 	}
-
-	// Structurally: the Canvas now carries an AnnotationPage with our note,
-	// without clobbering the existing painting AnnotationPage in items[].
 	var m struct {
 		Items []struct {
-			ID    string `json:"id"`
-			Type  string `json:"type"`
-			Items []struct {
-				Type string `json:"type"`
-			} `json:"items"`
+			Items       []struct{ Type string } `json:"items"`
 			Annotations []struct {
-				Type  string `json:"type"`
-				Items []struct {
-					Motivation string `json:"motivation"`
-				} `json:"items"`
+				Type, ID string
 			} `json:"annotations"`
 		} `json:"items"`
 	}
@@ -83,70 +79,56 @@ func TestServer_InjectsAnnotationsIntoCanvas(t *testing.T) {
 	}
 	cv := m.Items[0]
 	if len(cv.Items) != 1 || cv.Items[0].Type != "AnnotationPage" {
-		t.Fatalf("existing painting AnnotationPage in items[] was clobbered: %+v", cv.Items)
+		t.Fatalf("existing painting AnnotationPage clobbered: %+v", cv.Items)
 	}
 	if len(cv.Annotations) != 1 || cv.Annotations[0].Type != "AnnotationPage" ||
-		len(cv.Annotations[0].Items) != 1 || cv.Annotations[0].Items[0].Motivation != "commenting" {
-		t.Fatalf("canvas.annotations not injected correctly: %+v", cv.Annotations)
+		!strings.Contains(cv.Annotations[0].ID, "/annotations?canvas=") ||
+		!strings.Contains(cv.Annotations[0].ID, "fmt=w3c") {
+		t.Fatalf("canvas.annotations is not a w3c reference: %+v", cv.Annotations)
+	}
+
+	// Follow the reference exactly as Mirador would.
+	_, ann, _ := viewerGet(t, ts, injectedRef(t, body))
+	if !strings.Contains(ann, `"AnnotationPage"`) || !strings.Contains(ann, "a scholarly marginal note") {
+		t.Fatalf("referenced endpoint did not return the W3C note:\n%s", ann)
 	}
 }
 
-// Most of the preserved library is IIIF Presentation 2 (Gallica/Bodleian/
-// e-codices). Injection must work on the v2 sequences→canvases shape with
-// @id / @type:"sc:Canvas", not just v3.
-func TestInjectAnnotations_V2Canvas(t *testing.T) {
-	const cid = "https://gallica.bnf.fr/iiif/ark:/12148/x/canvas/f1"
-	manifest := []byte(`{"@context":"http://iiif.io/api/presentation/2/context.json",
-	  "@type":"sc:Manifest","sequences":[{"@type":"sc:Sequence","canvases":[
-	    {"@id":"` + cid + `","@type":"sc:Canvas","width":5127,"height":7000,"images":[]}]}]}`)
-	page := annPageJSON(t, `{"id":"urn:n:1","type":"Annotation","motivation":"commenting",
-	  "body":{"type":"TextualBody","value":"hand B begins here"},"target":"`+cid+`#xywh=0,0,10,10"}`)
-
-	out := injectAnnotations(manifest, page, "https://h/inst/ms")
-	if out == nil {
-		t.Fatal("injectAnnotations returned nil for a valid v2 manifest")
-	}
-	// Mirador 4 reads v2 annotations from canvas.otherContent
-	// (sc:AnnotationList of oa:Annotation), NOT canvas.annotations.
-	s := string(out)
-	for _, want := range []string{"otherContent", "sc:AnnotationList", "oa:Annotation", `"on"`, "hand B begins here"} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("v2 injection missing %q (must be Open Annotation):\n%s", want, s)
-		}
-	}
-	if strings.Contains(s, `"annotations"`) {
-		t.Fatalf("v2 canvas must not use the P3 annotations key (Mirador ignores it for v2):\n%s", s)
-	}
-}
-
-// End-to-end through the Handler with a v2 manifest + provenance +
-// annotations.json on disk — the real preserved-library scenario
-// (Gallica/Bodleian/e-codices are v2).
-func TestServer_InjectsAnnotations_V2EndToEnd(t *testing.T) {
+// v2 (the real library: Gallica/Bodleian/e-codices) → canvas.otherContent
+// sc:AnnotationList reference; the fetched URL returns Open Annotation.
+func TestServer_InjectsAnnotationReference_V2(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "gallica.bnf.fr", "ms")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	const cid = "https://gallica.bnf.fr/iiif/ark:/12148/x/canvas/f1"
-	files := map[string]string{
+	for n, c := range map[string]string{
 		"manifest.json": `{"@context":"http://iiif.io/api/presentation/2/context.json","@type":"sc:Manifest",
-		  "sequences":[{"@type":"sc:Sequence","canvases":[{"@id":"` + cid + `","@type":"sc:Canvas",
-		  "width":10,"height":10,"images":[]}]}]}`,
+		  "sequences":[{"@type":"sc:Sequence","canvases":[{"@id":"` + cid + `","@type":"sc:Canvas","width":10,"height":10,"images":[]}]}]}`,
 		"provenance.json":  `{"manifest_url":"https://gallica.bnf.fr/iiif/ark:/12148/x/manifest.json","images":[]}`,
 		"annotations.json": `{"type":"AnnotationPage","items":[{"id":"urn:n:1","type":"Annotation","motivation":"commenting","body":{"type":"TextualBody","value":"scribal correction"},"target":"` + cid + `#xywh=1,2,3,4"}]}`,
-	}
-	for n, c := range files {
+	} {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o600); err != nil {
 			t.Fatalf("write %s: %v", n, err)
 		}
 	}
 	ts := httptest.NewServer(New(root).Handler())
 	defer ts.Close()
+
 	_, body, _ := viewerGet(t, ts, "/gallica.bnf.fr/ms/manifest.json")
-	if !strings.Contains(body, "scribal correction") ||
-		!strings.Contains(body, "sc:AnnotationList") || !strings.Contains(body, "otherContent") {
-		t.Fatalf("v2 annotation not injected as Open Annotation otherContent:\n%s", body)
+	if strings.Contains(body, "scribal correction") {
+		t.Fatalf("v2 note must be referenced, not inlined:\n%s", body)
+	}
+	if !strings.Contains(body, "sc:AnnotationList") || !strings.Contains(body, "otherContent") ||
+		!strings.Contains(body, "fmt=oa") {
+		t.Fatalf("v2 otherContent reference missing:\n%s", body)
+	}
+	_, ann, _ := viewerGet(t, ts, injectedRef(t, body))
+	for _, want := range []string{"sc:AnnotationList", "oa:Annotation", `"on"`, "scribal correction"} {
+		if !strings.Contains(ann, want) {
+			t.Fatalf("v2 referenced endpoint missing %q:\n%s", want, ann)
+		}
 	}
 }
 
@@ -205,10 +187,11 @@ func TestServer_CreateAnnotation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "annotations.json")); err != nil {
 		t.Fatalf("annotations.json not written: %v", err)
 	}
-	// ...and now injected into the served manifest.
+	// ...and reachable via the reference Mirador fetches from the manifest.
 	_, mbody, _ := viewerGet(t, ts, "/inst/ms/manifest.json")
-	if !strings.Contains(mbody, "a created note") || !strings.Contains(mbody, `"annotations"`) {
-		t.Fatalf("created annotation not displayed via the manifest:\n%s", mbody)
+	_, ann, _ := viewerGet(t, ts, injectedRef(t, mbody))
+	if !strings.Contains(ann, "a created note") {
+		t.Fatalf("created annotation not reachable via the injected reference:\nmanifest=%s\nann=%s", mbody, ann)
 	}
 
 	// POST to a path that is not a preserved bundle is refused.

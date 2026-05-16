@@ -114,6 +114,17 @@ func (s *Server) serveInfoJSON(w http.ResponseWriter, r *http.Request, files htt
 	_, _ = w.Write(out) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
+// writeJSON encodes v as the JSON response with status, without HTML
+// escaping so URLs (e.g. the annotation endpoint's "&"-bearing id) stay
+// literal — valid JSON either way, but consistent with the manifest.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+}
+
 // newAnnotationID mints an opaque, collision-free id for a client-created
 // annotation that didn't supply one.
 func newAnnotationID() string {
@@ -173,9 +184,42 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 		if r.TLS != nil {
 			scheme = "https"
 		}
-		page.ID = scheme + "://" + r.Host + clean // AnnotationPage id == its URL
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(page) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+		selfURL := scheme + "://" + r.Host + r.URL.RequestURI() // id == fetched URL
+
+		q := r.URL.Query()
+		canvas := q.Get("canvas")
+		if canvas == "" {
+			// Whole store as a W3C AnnotationPage — the MAE adapter "all".
+			page.ID = selfURL
+			writeJSON(w, http.StatusOK, page)
+			return
+		}
+
+		// Per-canvas, in the shape Mirador's loader expects for this
+		// manifest version (the reference injected into the manifest).
+		sub := make([]annotation.Annotation, 0, len(page.Items))
+		for _, a := range page.Items {
+			if a.CanvasID() == canvas {
+				sub = append(sub, a)
+			}
+		}
+		if q.Get("fmt") == "oa" {
+			res := make([]any, 0, len(sub))
+			for _, a := range sub {
+				res = append(res, toOpenAnnotation(a))
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"@context":  "http://iiif.io/api/presentation/2/context.json",
+				"@id":       selfURL,
+				"@type":     "sc:AnnotationList",
+				"resources": res,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, annotation.Page{
+			Context: "http://iiif.io/api/presentation/3/context.json",
+			ID:      selfURL, Type: "AnnotationPage", Items: sub,
+		})
 
 	case http.MethodPost:
 		a, ok := s.readAnnotation(w, r)
@@ -189,9 +233,7 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 			http.Error(w, "could not save annotation", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(a) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+		writeJSON(w, http.StatusCreated, a)
 
 	case http.MethodPut:
 		a, ok := s.readAnnotation(w, r)
@@ -208,8 +250,7 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 		case err != nil:
 			http.Error(w, "could not update annotation", http.StatusInternalServerError)
 		default:
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(a) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+			writeJSON(w, http.StatusOK, a)
 		}
 
 	case http.MethodDelete:
