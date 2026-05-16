@@ -241,6 +241,32 @@ func TestServer_ServesEmbeddedMiradorBundle(t *testing.T) {
 // TestServer_ViewerPageEmbedsMiradorPointedAtLocalManifest: GET /<dir>/
 // returns a Mirador page that loads the embedded bundle and instantiates the
 // viewer against this dir's local (serve-time-rewritten) manifest.
+// The viewer carries a left-side library rail listing every preserved
+// manuscript so the user can switch documents without leaving the viewer.
+func TestServer_ViewerHasLibraryRail(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	_, body, _ := viewerGet(t, ts, "/cookbook-v3/")
+
+	if !strings.Contains(body, `class="library"`) {
+		t.Fatalf("viewer missing the library rail; body=%s", body)
+	}
+	// Lists the OTHER preserved manuscript as a switchable link…
+	if !strings.Contains(body, `href="/bodleian-c481/"`) {
+		t.Fatalf("library rail does not list other manuscripts; body=%s", body)
+	}
+	// …and marks the one currently open.
+	if !strings.Contains(body, `href="/cookbook-v3/"`) || !strings.Contains(body, "aria-current") {
+		t.Fatalf("library rail does not mark the current manuscript; body=%s", body)
+	}
+	// Mirador still wired to THIS manuscript.
+	if !strings.Contains(body, `data-manifest="/cookbook-v3/manifest.json"`) ||
+		!strings.Contains(body, "Mirador.viewer") {
+		t.Fatalf("library rail broke the Mirador wiring; body=%s", body)
+	}
+}
+
 // C2: the viewer carries an in-page annotation authoring affordance wired
 // to the C1 endpoint, alongside (not replacing) the Mirador wiring.
 func TestServer_ViewerHasAuthoringUI(t *testing.T) {

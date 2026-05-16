@@ -105,7 +105,7 @@ var viewerTmpl = template.Must(template.New("viewer").Parse(`<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}} — preserved</title>
+<title>{{.Cur.Title}} — preserved</title>
 <style>
 @font-face{font-family:"Newsreader";font-weight:700;font-display:swap;src:url("` + fontsRoutePrefix + `newsreader-700.woff2") format("woff2")}
 @font-face{font-family:"IBM Plex Mono";font-weight:600;font-display:swap;src:url("` + fontsRoutePrefix + `ibm-plex-mono-600.woff2") format("woff2")}
@@ -155,11 +155,21 @@ details.annotate[open]>summary::before{content:"\2013 "}
  font-size:.66rem;letter-spacing:.06em;color:var(--muted)}
 .annotate .status.err{color:var(--accent)}
 .annotate .status.ok{color:var(--success)}
+.stage{display:flex;flex:1;min-height:0}
+aside.library{width:15rem;flex:none;overflow-y:auto;background:var(--bg);
+ border-right:2px solid var(--primary);padding:14px 0}
+aside.library .lib-h{margin:0 0 8px;padding:0 16px;font-family:"IBM Plex Mono",ui-monospace,monospace;
+ font-size:.62rem;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--muted)}
+aside.library a{display:block;padding:7px 16px;color:var(--primary);text-decoration:none;
+ font-family:"Newsreader",Georgia,serif;font-size:.95rem;line-height:1.25;border-bottom:1px solid var(--border)}
+aside.library a:hover{color:var(--accent);background:var(--surface)}
+aside.library a[aria-current]{color:var(--accent);background:var(--surface);
+ box-shadow:inset 3px 0 0 var(--accent);font-weight:600}
 </style>
 <body>
 <header class="masthead">
 <div class="top"><p class="kicker">Preserved manuscript · offline</p><a class="back" href="/">&larr; Catalogue</a></div>
-<h1>{{.Title}}<span class="from">from <a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a></span></h1>
+<h1>{{.Cur.Title}}<span class="from">from <a href="{{.Cur.RecordURL}}" rel="noopener noreferrer">{{.Cur.Institution}}</a></span></h1>
 <details class="annotate">
 <summary>Annotate this manuscript (saved offline, beside the preserved copy)</summary>
 <form id="annotate-form">
@@ -182,7 +192,13 @@ details.annotate[open]>summary::before{content:"\2013 "}
 </form>
 </details>
 </header>
-<div id="mirador" data-manifest="/{{.Dir}}/manifest.json"></div>
+<div class="stage">
+<aside class="library">
+<p class="lib-h">Library · {{len .Docs}}</p>
+{{range .Docs}}<a href="/{{.Dir}}/"{{if eq .Dir $.Cur.Dir}} aria-current="page"{{end}}>{{.Title}}</a>
+{{end}}</aside>
+<div id="mirador" data-manifest="/{{.Cur.Dir}}/manifest.json"></div>
+</div>
 <script src="` + miradorRoute + `"></script>
 <script>
   Mirador.viewer({
@@ -363,11 +379,23 @@ func (s *Server) serveIndex(w http.ResponseWriter) {
 	_ = indexTmpl.Execute(w, s.manifestSummaries()) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
 
-// serveViewer writes the Mirador page for dir (a verified preserved slug).
+// viewerPage is the viewer template's data: the manuscript being viewed
+// plus the whole library, for the left-side switcher rail.
+type viewerPage struct {
+	Cur  manifestSummary
+	Docs []manifestSummary
+}
+
+// serveViewer writes the Mirador page for dir (a verified preserved slug),
+// with a left rail listing every preserved manuscript so the reader can
+// switch documents without leaving the viewer.
 func (s *Server) serveViewer(w http.ResponseWriter, dir string) {
 	abs := filepath.Join(s.root, filepath.FromSlash(dir))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = viewerTmpl.Execute(w, summaryFor(abs, dir)) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+	_ = viewerTmpl.Execute(w, viewerPage{ //nolint:errcheck // best-effort response write; client disconnect is not actionable
+		Cur:  summaryFor(abs, dir),
+		Docs: s.manifestSummaries(),
+	})
 }
 
 // serveBundle writes the embedded Mirador UMD bundle.
