@@ -111,7 +111,7 @@ var viewerTmpl = template.Must(template.New("viewer").Parse(`<!doctype html>
 @font-face{font-family:"IBM Plex Mono";font-weight:600;font-display:swap;src:url("` + fontsRoutePrefix + `ibm-plex-mono-600.woff2") format("woff2")}
 :root{--bg:#f4efe8;--text:#1c1917;--muted:#6a625b;--border:#c9bfb2;--accent:#8b2332;--primary:#1f2933}
 html,body{height:100%;margin:0}
-body{display:flex;flex-direction:column;background:var(--bg);
+body{display:flex;flex-direction:column;overflow:hidden;background:var(--bg);
  font-family:"Source Serif 4",Georgia,serif;color:var(--text)}
 header.masthead{padding:12px 24px;border-bottom:2px solid var(--primary);
  box-shadow:0 1px 0 rgba(28,25,23,.06)}
@@ -126,7 +126,12 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.35rem;line
 .from{letter-spacing:.1em;margin-left:.6rem}
 .from a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--border)}
 .from a:hover{color:var(--accent)}
-#mirador{flex:1;min-height:0}
+/* Mirador's root is position:static and its <main> is position:absolute,
+   so without a positioned, sized container its main escapes this flex
+   child and covers the masthead. position:relative contains it; flex:1
+   + min-height:0 gives it the height below the masthead. (per Mirador
+   wiki, "Embedding in Another Environment") */
+#mirador{flex:1;min-height:0;position:relative;overflow:hidden}
 </style>
 <body>
 <header class="masthead">
