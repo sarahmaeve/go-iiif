@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "mirador": "file:../../mirador",
-    "mirador-annotation-editor": "1.3.0",
+    "mirador-annotation-editor": "1.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "@mui/material": "^7.0.0",
