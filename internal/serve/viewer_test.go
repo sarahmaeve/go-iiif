@@ -311,3 +311,29 @@ func TestServer_ViewerPageEmbedsMiradorPointedAtLocalManifest(t *testing.T) {
 		t.Fatalf("viewer page not pointed at the local manifest; body=%s", body)
 	}
 }
+
+// Mirador 4 loads referenced annotations but, by default, leaves the
+// sidebar closed and on-canvas highlights off — so a correctly stored
+// and served note has nowhere to appear. The viewer must explicitly
+// activate the annotations companion. Keys verified against the
+// vendored bundle: sideBarOpenByDefault drives the initial open state,
+// defaultSideBarPanel selects the panel, highlightAllAnnotations shows
+// overlays without hover/selection.
+func TestServer_ViewerActivatesAnnotationsPanel(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	code, body, _ := viewerGet(t, ts, "/cookbook-v3/")
+	if code != http.StatusOK {
+		t.Fatalf("GET /cookbook-v3/ = %d, want 200", code)
+	}
+	for _, want := range []string{
+		"sideBarOpenByDefault: true",
+		"defaultSideBarPanel: 'annotations'",
+		"highlightAllAnnotations: true",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("viewer does not activate annotations panel: missing %q; body=%s", want, body)
+		}
+	}
+}

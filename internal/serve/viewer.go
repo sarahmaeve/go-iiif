@@ -203,7 +203,16 @@ aside.library a[aria-current]{color:var(--accent);background:var(--surface);
 <script>
   Mirador.viewer({
     id: 'mirador',
-    window: { allowFullscreen: true },
+    /* Mirador 4 loads referenced annotations but, by default, keeps the
+       sidebar closed and on-canvas highlights off — a stored note then
+       has nowhere to surface. Activate the annotations companion
+       explicitly. Keys verified against the vendored bundle. */
+    window: {
+      allowFullscreen: true,
+      sideBarOpenByDefault: true,
+      defaultSideBarPanel: 'annotations',
+      highlightAllAnnotations: true,
+    },
     windows: [{ manifestId: document.getElementById('mirador').dataset.manifest }]
   });
 </script>
