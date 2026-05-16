@@ -78,6 +78,35 @@ func TestServer_InfoJSONIDRewrittenToRequestURL(t *testing.T) {
 	}
 }
 
+// The index shows per-manifest info, not just the slug: a title linking to
+// the viewer, the institution linking to the original IIIF record, page
+// count, and an estimated size.
+func TestServer_IndexShowsRichInfo(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	code, body, _ := viewerGet(t, ts, "/")
+	if code != http.StatusOK {
+		t.Fatalf("GET / = %d", code)
+	}
+	// Title from the manifest label (cookbook-v3 = "The Gulf Stream"),
+	// still linking to the viewer.
+	if !strings.Contains(body, "The Gulf Stream") {
+		t.Fatalf("index missing manifest title; body=%s", body)
+	}
+	if !strings.Contains(body, `href="/cookbook-v3/"`) {
+		t.Fatalf("title must still link to the viewer; body=%s", body)
+	}
+	// Institution links to the original IIIF record (provenance manifest_url).
+	if !strings.Contains(body, `href="https://iiif.io/api/cookbook/recipe/0032-collection/manifest-01.json"`) {
+		t.Fatalf("index missing IIIF-record link to manifest_url; body=%s", body)
+	}
+	// Page count (cookbook-v3 provenance has 1 image) and an estimated size.
+	if !strings.Contains(body, "1") || !strings.Contains(strings.ToLower(body), "mb") {
+		t.Fatalf("index missing page count / estimated size; body=%s", body)
+	}
+}
+
 // TestServer_NestedInstitutionLayout: with <host>/<slug>/ nesting the index
 // must list each manifest by its full path, the viewer must serve at that
 // nested path, and the manifest must still be localized (rewrite regression).

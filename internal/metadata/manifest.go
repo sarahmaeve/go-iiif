@@ -43,6 +43,20 @@ func ExtractMetadata(manifest []byte) ([]MetadataEntry, error) {
 	return entries, nil
 }
 
+// Title returns the manifest's top-level label as one display string,
+// coercing any v2/v3 label shape (plain string, localized array, v3
+// language map) via the same normalizer used for metadata values. Empty
+// if absent or the manifest is not JSON.
+func Title(manifest []byte) string {
+	var m struct {
+		Label json.RawMessage `json:"label"`
+	}
+	if json.Unmarshal(manifest, &m) != nil {
+		return ""
+	}
+	return normalizeIIIFText(m.Label, defaultPrefLangs)
+}
+
 // ExtractV2Metadata is the former name of ExtractMetadata, retained so
 // existing callers/tests keep working. Extraction is now version-agnostic.
 func ExtractV2Metadata(manifest []byte) ([]MetadataEntry, error) {

@@ -284,7 +284,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Free-text-embedded dates | ⬜ deferred (needs false-positive-rate decision) | DESIGN §4.2 |
 | Static HTTPS server over `BlobStore` (mkcert cert; defaulted cert paths + setup-hint on miss; `-no-tls`; graceful) | ✅ done | `internal/serve`, `cmd/iiifpreserve` |
 | Serve-time manifest rewrite (provenance-driven, v2+v3; re-points to local Image API service when tiled, else strips; drops non-local thumbnails) | ✅ done | `internal/serve` |
-| Embedded **Mirador 4** viewer (`go:embed` UMD; index + `/<dir>/` + bundle route) | ✅ done | `internal/serve` |
+| Embedded **Mirador 4** viewer (`go:embed` UMD; `/<dir>/` + bundle route); **rich index** — per-manifest title / language / institution (links to the IIIF record) / ~pages / ~size, all derived from stored manifest+provenance+disk, no re-fetch | ✅ done | `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
 | Live dogfood: `-manifest` Cookbook v3 + Bodleian + Gallica estampe + 25-page Gallica ms + **e-codices Basel F III 15d (44 ff.)** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified. Verified sources tracked in `VERIFIED.md` | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
