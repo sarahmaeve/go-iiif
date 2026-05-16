@@ -115,6 +115,14 @@ periodic; Gallica keeps a deliberate fixed 13 s, no jitter), global
 concurrency cap, exponential backoff on
 429/503, conditional GET so re-runs are cheap, content-hash dedup, resumable
 checkpoint/journal so an interrupted large crawl restarts where it stopped.
+**Bot-wall stance:** present an honest identifying User-Agent (a one-time
+public-domain preservation fetch is not abusive) rather than spoofing a
+browser — bot-walls like Anubis (which Bodleian uses) add suspicion weight
+to "Mozilla"/"Opera" UAs and then issue a JS proof-of-work an HTTP client
+cannot solve, but score an honest UA as benign and allow it. Browser-spoof
+is the per-host *exception* (Gallica 403s honest UAs). Defense-in-depth: a
+2xx HTML response (Anubis answers challenges with 200) is rejected, never
+archived in place of a manifest/image.
 Image size requests the **largest available**: `/full/max/0/default.jpg`, then
 `/full/full/0/default.jpg`, then the bare resource URL (institutions serving
 static images, no Image API). License, if present, is **recorded for
@@ -240,7 +248,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Two-outcome `match`/`no-match` filter (lang/date/origin; lenient on missing data) | ✅ done | `internal/metadata` |
 | Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
-| HTTPS `Fetcher` (HTTPS-only, browser UA, status mapping) | ✅ done | `internal/source` |
+| HTTPS `Fetcher` (HTTPS-only enforced, std TLS verify; **honest identifying UA** by default with per-host browser-spoof override only where forced e.g. Gallica; honest `Accept`; status mapping; **rejects HTML interstitials** so a bot-wall/error page is never archived) | ✅ done | `internal/source` |
 | Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff, conditional GET, content-hash dedup, resumable journal | ✅ done | `internal/source` |
 | End-to-end classification pipeline | ✅ done | `internal/pipeline` |
 | Concurrent pipeline fan-out (opt-in `Workers`; per-host politeness preserved; live multi-host verified) | ✅ done | `internal/pipeline` |

@@ -62,6 +62,65 @@ func TestHTTPFetcher_StatusHandling(t *testing.T) {
 	}
 }
 
+func TestHTTPFetcher_PerHostUserAgent(t *testing.T) {
+	f := NewHTTPFetcher()
+
+	// Default / Anubis-protected hosts (e.g. Bodleian): honest, no
+	// "Mozilla" — so Anubis scores it weight 0 and ALLOWs it instead of
+	// issuing a JS proof-of-work challenge we cannot solve.
+	bod := f.uaFor("digital.bodleian.ox.ac.uk")
+	if strings.Contains(bod, "Mozilla") {
+		t.Fatalf("Bodleian UA must not spoof a browser: %q", bod)
+	}
+	if !strings.Contains(bod, "iiif-preserve") {
+		t.Fatalf("default UA should identify the tool: %q", bod)
+	}
+
+	// Gallica/BnF 403s non-browser UAs, so it (and only it) gets a
+	// browser-like override.
+	if g := f.uaFor("gallica.bnf.fr"); !strings.Contains(g, "Mozilla") {
+		t.Fatalf("Gallica UA must be browser-like: %q", g)
+	}
+}
+
+func TestHTTPFetcher_RejectsHTMLInterstitial(t *testing.T) {
+	cases := []struct {
+		name, ct, body string
+		wantErr        bool
+	}{
+		{"anubis challenge 200/html", "text/html; charset=utf-8",
+			"<!DOCTYPE html><title>Making sure you're not a bot</title>", true},
+		{"html under a generic content-type", "application/octet-stream",
+			"<!doctype html><html><body>nope</body></html>", true},
+		{"real manifest json passes", "application/json",
+			`{"@type":"sc:Manifest"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", c.ct)
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+
+			f := NewHTTPFetcher(WithHTTPClient(srv.Client()))
+			body, err := f.Fetch(context.Background(), srv.URL)
+			if c.wantErr {
+				if !errors.Is(err, ErrNonResource) {
+					t.Fatalf("err = %v, want ErrNonResource", err)
+				}
+				if body != nil {
+					t.Fatalf("body = %q, want nil when rejected", body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Fetch: %v", err)
+			}
+		})
+	}
+}
+
 func TestHTTPFetcher_FetchOverTLSSendsUserAgent(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -70,9 +129,9 @@ func TestHTTPFetcher_FetchOverTLSSendsUserAgent(t *testing.T) {
 		wantSub string // substring expected in the default UA
 	}{
 		{
-			name:    "default user-agent is browser-like, not Go default",
+			name:    "default user-agent is honest (identifies the tool, not a spoofed browser)",
 			opts:    nil,
-			wantSub: "Mozilla",
+			wantSub: "iiif-preserve",
 		},
 		{
 			name:   "user-agent is overridable",
