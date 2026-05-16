@@ -78,6 +78,32 @@ func TestServer_InfoJSONIDRewrittenToRequestURL(t *testing.T) {
 	}
 }
 
+// The editorial design serves its (offline, vendored) webfonts from the
+// binary and the index references them — no CDN, works offline.
+func TestServer_ServesEmbeddedFont(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	code, body, ctype := viewerGet(t, ts, "/__viewer__/fonts/newsreader-700.woff2")
+	if code != http.StatusOK {
+		t.Fatalf("GET font = %d, want 200", code)
+	}
+	if !strings.Contains(ctype, "font/woff2") {
+		t.Fatalf("font content-type = %q, want font/woff2", ctype)
+	}
+	if len(body) < 4 || body[:4] != "wOF2" {
+		t.Fatalf("font body is not woff2 (magic %q)", body[:min(len(body), 4)])
+	}
+
+	_, idx, _ := viewerGet(t, ts, "/")
+	if !strings.Contains(idx, "@font-face") || !strings.Contains(idx, "Newsreader") {
+		t.Fatalf("index does not adopt the editorial typography; body=%s", idx)
+	}
+	if !strings.Contains(idx, "/__viewer__/fonts/") {
+		t.Fatalf("index does not reference the local font route; body=%s", idx)
+	}
+}
+
 // The index shows per-manifest info, not just the slug: a title linking to
 // the viewer, the institution linking to the original IIIF record, page
 // count, and an estimated size.

@@ -41,6 +41,9 @@ func (s *Server) Handler() http.Handler {
 		case clean == miradorRoute:
 			s.serveBundle(w)
 			return
+		case strings.HasPrefix(clean, fontsRoutePrefix):
+			s.serveFont(w, r, files)
+			return
 		case r.URL.Path == "/":
 			s.serveIndex(w)
 			return
