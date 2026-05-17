@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,6 +237,101 @@ func TestFormatResult(t *testing.T) {
 	errLine := formatResult(pipeline.Result{ManifestURL: "https://example.org/bad.json", Err: errBoom})
 	if !contains(errLine, "ERROR") || !contains(errLine, "boom") {
 		t.Fatalf("error result = %q, want ERROR and cause", errLine)
+	}
+}
+
+func TestDryRunLine(t *testing.T) {
+	// Minimal Presentation 2.x manifest: two canvases, one image each.
+	const v2 = `{"sequences":[{"canvases":[
+		{"label":"f1","images":[{"resource":{"@id":"https://ex.org/img/1/full/full/0/default.jpg"}}]},
+		{"label":"f2","images":[{"resource":{"@id":"https://ex.org/img/2/full/full/0/default.jpg"}}]}
+	]}]}`
+	n, line, err := dryRunLine([]byte(v2))
+	if err != nil {
+		t.Fatalf("dryRunLine: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("image count = %d, want 2", n)
+	}
+	if !contains(line, "2 image(s)") || !contains(line, "dry-run") {
+		t.Fatalf("line = %q, want it to mention 2 image(s) and dry-run", line)
+	}
+}
+
+func TestDryRunLine_BadManifest(t *testing.T) {
+	if _, _, err := dryRunLine([]byte("not json")); err == nil {
+		t.Fatal("expected an error for an undecodable manifest")
+	}
+}
+
+func TestRunSummary(t *testing.T) {
+	// The load-bearing invariant: a dry run must never tell the researcher
+	// images were "preserved", because nothing was written to disk.
+	dry := runSummary(true, 10, 3, 42)
+	if contains(dry, "preserved") {
+		t.Fatalf("dry-run summary must not claim preservation: %q", dry)
+	}
+	if !contains(dry, "dry-run") || !contains(dry, "42") {
+		t.Fatalf("dry-run summary must mark itself and report the total: %q", dry)
+	}
+	real := runSummary(false, 10, 3, 42)
+	if !contains(real, "42 images preserved") {
+		t.Fatalf("real summary must report images preserved: %q", real)
+	}
+}
+
+// recordingFetcher counts Fetch calls so a dry run can be proven not to
+// download anything.
+type recordingFetcher struct{ calls int }
+
+func (f *recordingFetcher) Fetch(context.Context, string) ([]byte, error) {
+	f.calls++
+	return nil, nil
+}
+
+// recordingStore counts Put calls so a dry run can be proven not to write.
+type recordingStore struct{ puts int }
+
+func (s *recordingStore) Put(context.Context, string, []byte) error { s.puts++; return nil }
+func (s *recordingStore) Exists(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+// TestCrawl_DryRunEnumeratesWithoutDownloading is the real wiring test: it
+// drives the crawl loop with a Match carrying a 2-image manifest and a
+// NoMatch, with a store present, and asserts the dry-run path enumerates the
+// per-work count but never touches the fetcher or the store.
+func TestCrawl_DryRunEnumeratesWithoutDownloading(t *testing.T) {
+	const twoImg = `{"sequences":[{"canvases":[
+		{"images":[{"resource":{"@id":"https://ex.org/a/full/full/0/default.jpg"}}]},
+		{"images":[{"resource":{"@id":"https://ex.org/b/full/full/0/default.jpg"}}]}
+	]}]}`
+	results := func(yield func(pipeline.Result) bool) {
+		if !yield(pipeline.Result{ManifestURL: "https://ex.org/m1", Class: metadata.Match, Manifest: []byte(twoImg)}) {
+			return
+		}
+		yield(pipeline.Result{ManifestURL: "https://ex.org/m2", Class: metadata.NoMatch})
+	}
+
+	fetcher := &recordingFetcher{}
+	store := &recordingStore{}
+	var sb strings.Builder
+	out := &cliWriter{w: &sb}
+	errOut := &cliWriter{w: io.Discard}
+
+	n, matched, images := crawl(context.Background(), results, fetcher, store, true /*dryRun*/, 0, out, errOut)
+
+	if n != 2 || matched != 1 || images != 2 {
+		t.Fatalf("n,matched,images = %d,%d,%d; want 2,1,2", n, matched, images)
+	}
+	if fetcher.calls != 0 {
+		t.Fatalf("dry run fetched %d time(s); it must not download anything", fetcher.calls)
+	}
+	if store.puts != 0 {
+		t.Fatalf("dry run wrote %d blob(s); it must not store anything", store.puts)
+	}
+	if !contains(sb.String(), "2 image(s)") || !contains(sb.String(), "dry-run") {
+		t.Fatalf("output = %q, want the per-work count and a dry-run marker", sb.String())
 	}
 }
 

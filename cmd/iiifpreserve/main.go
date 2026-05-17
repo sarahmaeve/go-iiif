@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"iter"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -220,8 +221,22 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		store = preserve.NewLocalBlobStore(o.store)
 	}
 
-	var n, matched, preserved int
-	for r := range p.Run(ctx) {
+	n, matched, images := crawl(ctx, p.Run(ctx), fetcher, store, o.dryRun, o.max, out, errOut)
+	errOut.line(runSummary(o.dryRun, n, matched, images))
+
+	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
+}
+
+// crawl consumes the pipeline's classified results and, per Match, either
+// previews the per-work image count (-dry-run, no fetch, no store) or
+// preserves the images. It returns the manifest, match, and image tallies.
+// A dry run short-circuits before any download even when store is non-nil,
+// so the no-network guarantee does not depend on the caller nilling store.
+func crawl(ctx context.Context, results iter.Seq[pipeline.Result], fetcher source.Fetcher, store preserve.BlobStore, dryRun bool, max int, out, errOut *cliWriter) (n, matched, images int) {
+	for r := range results {
 		out.line(formatResult(r))
 		if out.err != nil {
 			// stdout sink is gone (e.g. broken pipe): stop crawling.
@@ -230,27 +245,52 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		n++
 		if r.Err == nil && r.Class == metadata.Match {
 			matched++
-			if store != nil {
+			switch {
+			case dryRun:
+				cnt, line, err := dryRunLine(r.Manifest)
+				if err != nil {
+					errOut.line("iiifpreserve: enumerating", r.ManifestURL, "::", err)
+				} else {
+					images += cnt
+					out.printf("%s", line)
+				}
+			case store != nil:
 				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest)
 				if err != nil {
 					errOut.line("iiifpreserve: preserve", r.ManifestURL, "::", err)
 				} else {
-					preserved += sum.Stored
+					images += sum.Stored
 					out.printf("  preserved %d image(s) to %s (skipped %d, %d failed)\n",
 						sum.Stored, sum.Dir, sum.Skipped, len(sum.Failures))
 				}
 			}
 		}
-		if o.max > 0 && n >= o.max {
+		if max > 0 && n >= max {
 			break
 		}
 	}
-	errOut.printf("iiifpreserve: %d manifests, %d match, %d images preserved\n", n, matched, preserved)
+	return n, matched, images
+}
 
-	if out.err != nil || errOut.err != nil {
-		return 1
+// dryRunLine reports how many images a matched manifest holds, without
+// downloading any of them — the per-work inventory line for a -dry-run crawl.
+func dryRunLine(manifest []byte) (int, string, error) {
+	imgs, err := preserve.EnumerateImages(manifest)
+	if err != nil {
+		return 0, "", err
 	}
-	return 0
+	return len(imgs), fmt.Sprintf("  %d image(s) (dry-run, not stored)\n", len(imgs)), nil
+}
+
+// runSummary is the final one-line tally. A dry run reports the images it
+// would have preserved; a real run reports the images actually stored.
+func runSummary(dryRun bool, n, matched, images int) string {
+	if dryRun {
+		return fmt.Sprintf("iiifpreserve: %d manifests, %d match, %d images (dry-run, not stored)",
+			n, matched, images)
+	}
+	return fmt.Sprintf("iiifpreserve: %d manifests, %d match, %d images preserved",
+		n, matched, images)
 }
 
 // serveBanner is the startup message: where the bundle is served and the

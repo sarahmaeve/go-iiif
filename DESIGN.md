@@ -12,8 +12,7 @@
 > **Status detail:** project status lives in this document (§8), not in
 > assistant memory. One caveat: rewrite is serve-time, so a dumb static host
 > (S3) would serve the un-rewritten manifest — acceptable given local-first
-> scope. Known limitation: bundles preserved *before* tiling existed are not
-> re-tiled on an idempotent re-run. Working name TBD (binary provisionally
+> scope. Working name TBD (binary provisionally
 > `iiifpreserve`). Single Go binary (one non-stdlib dep:
 > `golang.org/x/image`). See §8 for component status.
 
@@ -197,8 +196,6 @@ carries the most risk.
   local IIIF level0 tile pyramids + deep zoom; tolerant *version-agnostic*
   metadata extraction (object-valued v2/v3 labels no longer drop manifests);
   `-store`/config/`-manifest`/`-dry-run`; institution-nested library.
-- **Re-tile existing bundles:** a bundle preserved *before* tiling is not
-  re-tiled on idempotent re-run (skip branch only checks the flat jpg).
 - **In-browser deep zoom: confirmed working** (Mirador zoom-in verified
   visually against a served, tiled bundle). Everything up to the served
   tiles/info.json is also automated-test covered.
@@ -291,12 +288,11 @@ checks are `-tags=integration` opt-in or the manual binary.
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
 | Live dogfood: `-manifest` Cookbook v3 + Bodleian + Gallica estampe + 25-page Gallica ms + **e-codices Basel F III 15d (44 ff.)** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified. Verified sources tracked in `VERIFIED.md` | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
-| Re-tile bundles preserved before tiling existed | ⬜ deferred (idempotent skip only checks flat jpg) | DESIGN §7 |
 The binary runs the full `acquire → select → preserve → serve → view →
 deep-zoom` path live (one binary, real institution or single `-manifest`:
 filtered, polite, institution-nested on-disk copy with provenance and local
 IIIF tile pyramids, served over HTTPS with the manifest re-pointed at local
 images + a local Image API service, viewed in an embedded Mirador 4). The
 remaining high-value gap is recall: the free-text-date parser (§4.2) and
-per-institution field mapping, plus re-tiling pre-tiling bundles. Project
-status is tracked here, not in assistant memory.
+per-institution field mapping. Project status is tracked here, not in
+assistant memory.
