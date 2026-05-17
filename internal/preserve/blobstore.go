@@ -2,7 +2,9 @@ package preserve
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -61,7 +63,7 @@ func (s *LocalBlobStore) Exists(_ context.Context, key string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	return false, fmt.Errorf("preserve: stat %s: %w", key, err)

@@ -62,6 +62,41 @@ func TestServer_ServesPreservedBundle(t *testing.T) {
 	}
 }
 
+func TestServer_NoDirectoryListing(t *testing.T) {
+	root := writeBundle(t)
+	// A subdirectory that is NOT a preserved manifest bundle: it must not
+	// be browsable as an http.FileServer directory listing (would leak the
+	// preserved tree structure if the server is ever reverse-proxied).
+	plain := filepath.Join(root, "plain")
+	if err := os.MkdirAll(plain, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(plain, "note.txt"), []byte("internal"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	ts := httptest.NewServer(New(root).Handler())
+	defer ts.Close()
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/plain/", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /plain/: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /plain/ = %d, want 404 (no directory listing of the preserved tree)", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "note.txt") {
+		t.Fatalf("directory listing leaked tree contents: %q", body)
+	}
+}
+
 func TestServer_RewritesServedManifest(t *testing.T) {
 	// Serve the real bundle fixture (manifest.json + provenance.json).
 	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())

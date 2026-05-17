@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,7 +59,7 @@ func parseConfig(r io.Reader) (map[string]string, error) {
 func loadConfig(home string) (map[string]string, error) {
 	f, err := os.Open(configPath(home))
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return map[string]string{}, nil
 		}
 		return nil, fmt.Errorf("config: %w", err)

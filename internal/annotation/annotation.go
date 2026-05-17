@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,7 +185,7 @@ func Load(dir string) (Page, error) {
 	empty := Page{Context: defaultContext, Type: "AnnotationPage", Items: []Annotation{}}
 	b, err := os.ReadFile(filepath.Join(dir, FileName)) //nolint:gosec // G304: fixed filename under a server-controlled bundle dir
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return empty, nil
 		}
 		return empty, fmt.Errorf("annotation: reading %s: %w", FileName, err)

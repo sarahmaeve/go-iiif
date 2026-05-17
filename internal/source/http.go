@@ -25,6 +25,23 @@ var ErrInsecureURL = errors.New("source: non-https URL refused")
 // manifest/image it asked for.
 var ErrNonResource = errors.New("source: response is an HTML page, not a IIIF resource (bot challenge or error?)")
 
+// ErrResponseTooLarge is returned when a response body exceeds
+// maxResponseBytes. A malicious or broken server streaming an unbounded
+// body would otherwise exhaust process memory; we refuse rather than buffer
+// it. The cap is generous enough for full-resolution preservation images.
+var ErrResponseTooLarge = errors.New("source: response body exceeds size limit")
+
+// maxResponseBytes bounds a single fetched body. A var (not const) so tests
+// can lower it without streaming the production-sized cap. 512 MiB clears
+// even very large manuscript images while still bounding worst-case memory
+// under the concurrency limiter.
+var maxResponseBytes int64 = 512 << 20
+
+// defaultHTTPTimeout bounds a single fetch (connect + headers + body). Without
+// it, a server that accepts the connection then stalls holds a worker
+// goroutine forever and can drain PoliteFetcher's concurrency semaphore.
+const defaultHTTPTimeout = 90 * time.Second
+
 // HTTPStatusError is returned for a non-2xx response (other than 404, which
 // maps to ErrNotFound). It carries the status code so the polite layer can
 // decide whether the failure is retryable, and any server-provided
@@ -89,7 +106,7 @@ func NewHTTPFetcher(opts ...Option) *HTTPFetcher {
 	for host, p := range reg.ByHost {
 		hostUA[host] = p.UserAgent
 	}
-	f := &HTTPFetcher{client: http.DefaultClient, userAgent: reg.Default.UserAgent, hostUA: hostUA}
+	f := &HTTPFetcher{client: &http.Client{Timeout: defaultHTTPTimeout}, userAgent: reg.Default.UserAgent, hostUA: hostUA}
 	for _, opt := range opts {
 		opt(f)
 	}
@@ -180,9 +197,12 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 		}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("source: reading %s: %w", rawURL, err)
+	}
+	if int64(len(body)) > maxResponseBytes {
+		return nil, fmt.Errorf("%w: %s (limit %d bytes)", ErrResponseTooLarge, rawURL, maxResponseBytes)
 	}
 
 	// Never archive an HTML page in place of a IIIF resource. Bot-walls

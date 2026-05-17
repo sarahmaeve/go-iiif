@@ -9,6 +9,59 @@ import (
 	"testing"
 )
 
+func TestNewHTTPFetcher_DefaultClientHasTimeout(t *testing.T) {
+	f := NewHTTPFetcher()
+	if f.client == http.DefaultClient {
+		t.Fatal("default fetcher uses http.DefaultClient (no Timeout); a stalling IIIF server pins a worker goroutine forever")
+	}
+	if f.client.Timeout <= 0 {
+		t.Fatalf("default client Timeout = %v, want a positive bound on a single fetch", f.client.Timeout)
+	}
+}
+
+func TestHTTPFetcher_RejectsOversizedBody(t *testing.T) {
+	old := maxResponseBytes
+	maxResponseBytes = 64
+	t.Cleanup(func() { maxResponseBytes = old })
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(strings.Repeat("a", int(maxResponseBytes)+100)))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(WithHTTPClient(srv.Client()))
+	body, err := f.Fetch(context.Background(), srv.URL)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("err = %v, want ErrResponseTooLarge for an over-limit body", err)
+	}
+	if body != nil {
+		t.Fatalf("body = %d bytes, want nil when the limit is exceeded", len(body))
+	}
+}
+
+func TestHTTPFetcher_AllowsBodyAtLimit(t *testing.T) {
+	old := maxResponseBytes
+	maxResponseBytes = 64
+	t.Cleanup(func() { maxResponseBytes = old })
+
+	payload := `{"ok":` + strings.Repeat("0", 50) + `}` // 57 bytes <= 64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(WithHTTPClient(srv.Client()))
+	body, err := f.Fetch(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Fetch of a body within the limit: %v", err)
+	}
+	if string(body) != payload {
+		t.Fatalf("body = %q, want %q", body, payload)
+	}
+}
+
 func TestHTTPFetcher_RejectsNonHTTPS(t *testing.T) {
 	reached := false
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

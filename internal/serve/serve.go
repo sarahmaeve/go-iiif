@@ -104,6 +104,10 @@ func (s *Server) Handler() http.Handler {
 				s.serveViewer(w, dir)
 				return
 			}
+			// Not a manifest bundle: refuse rather than let http.FileServer
+			// render a directory listing that exposes the preserved tree.
+			http.NotFound(w, r)
+			return
 		}
 		files.ServeHTTP(w, r)
 	})
