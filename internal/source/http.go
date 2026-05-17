@@ -129,14 +129,21 @@ func looksLikeHTML(body []byte) bool {
 	return strings.HasPrefix(s, "<!doctype html") || strings.HasPrefix(s, "<html")
 }
 
+// maxRetryAfterSecs caps an honored Retry-After. A larger value (including
+// one that would overflow time.Duration's int64 nanoseconds and wrap
+// negative) is treated as absent: nothing legitimately needs a multi-day
+// wait, and the caller's own backoff is a safer bound than a server-supplied
+// one.
+const maxRetryAfterSecs = 24 * 60 * 60
+
 // parseRetryAfter parses the delta-seconds form of the Retry-After header.
-// The HTTP-date form is ignored (returns 0) — callers fall back to their own
-// backoff schedule.
+// The HTTP-date form, a negative value, or one exceeding maxRetryAfterSecs
+// is ignored (returns 0) — callers fall back to their own backoff schedule.
 func parseRetryAfter(v string) time.Duration {
 	if v == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+	if secs, err := strconv.Atoi(v); err == nil && secs >= 0 && secs <= maxRetryAfterSecs {
 		return time.Duration(secs) * time.Second
 	}
 	return 0

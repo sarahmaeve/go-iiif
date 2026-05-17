@@ -40,6 +40,21 @@ type provenanceImg struct {
 
 var unsafeKeyChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
+// dotsOnly matches a segment that is nothing but dots ("." / ".." / ...).
+// The unsafeKeyChars allow-set keeps "." (legitimate in slugs like "v1.2"),
+// which would otherwise let a "../" host or path survive as a real
+// traversal segment once joined under the store root.
+var dotsOnly = regexp.MustCompile(`^\.+$`)
+
+// safeSegment neutralizes a single path segment that would traverse out of
+// the store root, while leaving ordinary dotted slugs untouched.
+func safeSegment(s string) string {
+	if dotsOnly.MatchString(s) {
+		return "_"
+	}
+	return s
+}
+
 // dirFor derives a stable, filesystem-safe BlobStore prefix from a manifest
 // URL, nested by institution: "<host>/<slugified-path>". The host is its own
 // path segment so a permanent library groups manifests under their source
@@ -50,8 +65,8 @@ func dirFor(manifestURL string) string {
 		s = s[i+3:]
 	}
 	host, rest, _ := strings.Cut(s, "/")
-	host = strings.Trim(unsafeKeyChars.ReplaceAllString(host, "_"), "_")
-	slug := strings.Trim(unsafeKeyChars.ReplaceAllString(rest, "_"), "_")
+	host = safeSegment(strings.Trim(unsafeKeyChars.ReplaceAllString(host, "_"), "_"))
+	slug := safeSegment(strings.Trim(unsafeKeyChars.ReplaceAllString(rest, "_"), "_"))
 	switch {
 	case host == "":
 		return slug

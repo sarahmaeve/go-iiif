@@ -7,7 +7,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// ErrKeyEscapesRoot reports a blob key that resolves outside the store root.
+// dirFor already sanitizes keys; this is defense in depth so a future caller
+// (or a bug there) cannot make the store read or write arbitrary paths.
+var ErrKeyEscapesRoot = errors.New("preserve: blob key escapes store root")
 
 // BlobStore persists preservation artifacts under string keys (slash-separated
 // paths). Local first; the interface keeps other backends possible later.
@@ -28,12 +34,19 @@ func NewLocalBlobStore(dir string) *LocalBlobStore {
 	return &LocalBlobStore{root: dir}
 }
 
-func (s *LocalBlobStore) path(key string) string {
-	return filepath.Join(s.root, filepath.FromSlash(key))
+func (s *LocalBlobStore) path(key string) (string, error) {
+	p := filepath.Join(s.root, filepath.FromSlash(key))
+	if p != s.root && !strings.HasPrefix(p, s.root+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrKeyEscapesRoot, key)
+	}
+	return p, nil
 }
 
 func (s *LocalBlobStore) Put(_ context.Context, key string, data []byte) error {
-	dst := s.path(key)
+	dst, err := s.path(key)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return fmt.Errorf("preserve: creating dir for %s: %w", key, err)
 	}
@@ -59,7 +72,11 @@ func (s *LocalBlobStore) Put(_ context.Context, key string, data []byte) error {
 }
 
 func (s *LocalBlobStore) Exists(_ context.Context, key string) (bool, error) {
-	_, err := os.Stat(s.path(key))
+	p, err := s.path(key)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(p)
 	if err == nil {
 		return true, nil
 	}
