@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -112,7 +113,7 @@ func TestParseArgs(t *testing.T) {
 			"-max", "7",
 			"-workers", "8",
 			"-preserve", "/tmp/out",
-			"-serve", "127.0.0.1:8443",
+			"-serve=8443",
 			"-tls-cert", "/c.pem", "-tls-key", "/k.pem",
 		})
 		if err != nil {
@@ -130,8 +131,8 @@ func TestParseArgs(t *testing.T) {
 		if o.preserve != "/tmp/out" {
 			t.Fatalf("preserve = %q, want /tmp/out", o.preserve)
 		}
-		if o.serve != "127.0.0.1:8443" || o.tlsCert != "/c.pem" || o.tlsKey != "/k.pem" {
-			t.Fatalf("serve flags = %q %q %q", o.serve, o.tlsCert, o.tlsKey)
+		if o.servePort != 8443 || o.tlsCert != "/c.pem" || o.tlsKey != "/k.pem" {
+			t.Fatalf("serve flags = %d %q %q", o.servePort, o.tlsCert, o.tlsKey)
 		}
 		f := o.filter()
 		wantLangs := []string{"fr", "la"}
@@ -146,8 +147,63 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("bare -serve uses the default port on localhost", func(t *testing.T) {
+		o, err := parseArgs([]string{"-serve"})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.servePort != defaultServePort {
+			t.Fatalf("servePort = %d, want default %d", o.servePort, defaultServePort)
+		}
+		want := "127.0.0.1:" + strconv.Itoa(defaultServePort)
+		if got := serveAddr(o.servePort); got != want {
+			t.Fatalf("serveAddr = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("-serve=PORT picks an explicit port", func(t *testing.T) {
+		o, err := parseArgs([]string{"-serve=9000"})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.servePort != 9000 {
+			t.Fatalf("servePort = %d, want 9000", o.servePort)
+		}
+	})
+
+	t.Run("privileged / root-only ports are refused", func(t *testing.T) {
+		for _, a := range []string{"-serve=80", "-serve=443", "-serve=1023"} {
+			if _, err := parseArgs([]string{a}); err == nil {
+				t.Fatalf("%s: expected error (port below %d is root-only)", a, minServePort)
+			}
+		}
+		// The first unprivileged port must be allowed.
+		o, err := parseArgs([]string{"-serve=1024"})
+		if err != nil {
+			t.Fatalf("-serve=1024 should be allowed: %v", err)
+		}
+		if o.servePort != minServePort {
+			t.Fatalf("servePort = %d, want %d", o.servePort, minServePort)
+		}
+	})
+
+	t.Run("out-of-range ports are refused", func(t *testing.T) {
+		for _, a := range []string{"-serve=0", "-serve=-1", "-serve=70000", "-serve=65536"} {
+			if _, err := parseArgs([]string{a}); err == nil {
+				t.Fatalf("%s: expected a range error", a)
+			}
+		}
+	})
+
+	t.Run("space-separated -serve PORT is rejected with guidance", func(t *testing.T) {
+		_, err := parseArgs([]string{"-serve", "8443"})
+		if err == nil {
+			t.Fatal("expected error: -serve PORT (space) must be -serve=PORT")
+		}
+	})
+
 	t.Run("tls flags default to the mkcert-convention path", func(t *testing.T) {
-		o, err := parseArgs([]string{"-serve", "127.0.0.1:8443"})
+		o, err := parseArgs([]string{"-serve=8443"})
 		if err != nil {
 			t.Fatalf("parseArgs: %v", err)
 		}
@@ -194,12 +250,12 @@ func TestParseArgs(t *testing.T) {
 	})
 
 	t.Run("serve no longer requires preserve (store has a default)", func(t *testing.T) {
-		o, err := parseArgs([]string{"-serve", "127.0.0.1:8443"})
+		o, err := parseArgs([]string{"-serve=8443"})
 		if err != nil {
 			t.Fatalf("serve without -preserve should be allowed now: %v", err)
 		}
-		if o.serve != "127.0.0.1:8443" {
-			t.Fatalf("serve = %q", o.serve)
+		if o.servePort != 8443 {
+			t.Fatalf("servePort = %d, want 8443", o.servePort)
 		}
 	})
 

@@ -15,7 +15,7 @@ three moves:
    URL. Some institutions also have a derivable pattern (Gallica below).
 2. **Preserve it** — `iiifpreserve -manifest <that-url>` downloads the
    images into `~/iiif-images` and builds deep-zoom tiles.
-3. **Serve and view** — `iiifpreserve -serve 127.0.0.1:8443`, open the
+3. **Serve and view** — `iiifpreserve -serve`, open the
    page, click the item: it's now local, offline, zoomable. (First time
    only: do the one-time HTTPS setup in §3 below, or add `-no-tls` and
    use `http://`.)
@@ -28,7 +28,7 @@ You're looking at an item on `digital.bodleian.ox.ac.uk`. Its page has a
 
 ```sh
 iiifpreserve -manifest https://iiif.bodleian.ox.ac.uk/iiif/manifest/f317ad0c-a35b-4e9f-8426-c71f215d382d.json
-iiifpreserve -serve 127.0.0.1:8443
+iiifpreserve -serve
 # open https://127.0.0.1:8443/ → click the bodleian entry
 ```
 
@@ -49,7 +49,7 @@ https://gallica.bnf.fr/ark:/12148/btv1b9055204k
 
 ```sh
 iiifpreserve -manifest https://gallica.bnf.fr/iiif/ark:/12148/btv1b9055204k/manifest.json
-iiifpreserve -serve 127.0.0.1:8443
+iiifpreserve -serve
 ```
 
 This one (a BnF photograph) is a single 5127×7000 image — ~40 s, because
@@ -126,7 +126,7 @@ mkcert entirely? Add `-no-tls` to step 4 and use `http://` instead.)
 ## 4. Serve and view
 
 ```sh
-iiifpreserve -serve 127.0.0.1:8443
+iiifpreserve -serve          # default :8443; -serve=PORT to choose another
 ```
 
 ```

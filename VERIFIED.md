@@ -9,7 +9,7 @@ Use any of these via the happy path (see `QUICKSTART.md`):
 
 ```sh
 iiifpreserve -manifest <manifest-url>
-iiifpreserve -serve 127.0.0.1:8443
+iiifpreserve -serve            # default :8443; -serve=PORT for another
 ```
 
 | Institution | IIIF host | Manifest URL pattern | Verified example | Notes |

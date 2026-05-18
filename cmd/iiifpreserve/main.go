@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/institution"
@@ -37,11 +39,58 @@ type options struct {
 	store      string // -store: persistent library root (resolved in run())
 	preserve   string // deprecated alias for -store (back-compat)
 	dryRun     bool   // classify only, do not download images
-	serve      string // addr; non-empty = serve the store, don't crawl
+	servePort  int    // -serve PORT; non-zero = serve the store on localhost, don't crawl
 	tlsCert    string
 	tlsKey     string
 	noTLS      bool
 }
+
+const (
+	// defaultServePort is the localhost port used when -serve is given
+	// without a value.
+	defaultServePort = 8443
+	// minServePort is the lowest non-privileged TCP port. Ports below
+	// 1024 are root-only on Unix; the tool refuses to bind them so a
+	// researcher can never be asked to (or accidentally) run privileged.
+	minServePort = 1024
+	maxServePort = 65535
+)
+
+// servePortFlag backs -serve as an optional-value flag: a bare `-serve`
+// selects defaultServePort, while `-serve=PORT` selects PORT. Implementing
+// IsBoolFlag is what lets the bare form parse without an argument. A zero
+// value means "not serving" (the default — crawl instead).
+type servePortFlag int
+
+func (p *servePortFlag) String() string {
+	if p == nil || *p == 0 {
+		return ""
+	}
+	return strconv.Itoa(int(*p))
+}
+
+// Set accepts "true" (the flag package's value for a bare bool-like flag,
+// i.e. `-serve`) as "use the default port", or an explicit port string.
+// Privileged and out-of-range ports are rejected here so the error
+// surfaces at parse time with the same message regardless of source.
+func (p *servePortFlag) Set(s string) error {
+	if s == "true" { // bare -serve
+		*p = defaultServePort
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("-serve: invalid port %q", s)
+	}
+	if n < minServePort || n > maxServePort {
+		return fmt.Errorf("-serve: port %d out of range; use %d..%d (ports below %d are root-only)",
+			n, minServePort, maxServePort, minServePort)
+	}
+	*p = servePortFlag(n)
+	return nil
+}
+
+func (p *servePortFlag) IsBoolFlag() bool { return true }
 
 // filter builds the researcher's selection predicate from the parsed flags.
 func (o *options) filter() metadata.Filter {
@@ -81,18 +130,28 @@ func parseArgs(args []string) (*options, error) {
 		store      = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
 		preserve   = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun     = fs.Bool("dry-run", false, "classify only; do not download images")
-		serve      = fs.String("serve", "", "serve the store over HTTPS at this addr (e.g. 127.0.0.1:8443) instead of crawling")
+		serve      servePortFlag
 		tlsCert    = fs.String("tls-cert", defaultTLSCert, "TLS certificate PEM (default: mkcert convention path)")
 		tlsKey     = fs.String("tls-key", defaultTLSKey, "TLS private key PEM (default: mkcert convention path)")
 		noTLS      = fs.Bool("no-tls", false, "serve plain HTTP instead of HTTPS (debugging only)")
 	)
+	fs.Var(&serve, "serve", fmt.Sprintf(
+		"serve the store over HTTPS on localhost instead of crawling; "+
+			"bare -serve uses :%d, or -serve=PORT (%d..%d)",
+		defaultServePort, minServePort, maxServePort))
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	// IsBoolFlag means a stray `-serve PORT` leaves PORT as a non-flag
+	// argument (and halts flag parsing). The tool takes no positional
+	// args, so any leftover is a mistake worth a pointed message.
+	if fs.NArg() > 0 {
+		return nil, fmt.Errorf("unexpected argument %q; pass options as flags (use -serve=PORT, not -serve PORT)", fs.Arg(0))
 	}
 	if *collection != "" && *manifest != "" {
 		return nil, errors.New("-collection and -manifest are mutually exclusive")
 	}
-	if *serve == "" && *collection == "" && *manifest == "" {
+	if serve == 0 && *collection == "" && *manifest == "" {
 		return nil, errors.New("one of -collection, -manifest, or -serve is required")
 	}
 	o := &options{
@@ -109,7 +168,7 @@ func parseArgs(args []string) (*options, error) {
 		store:      *store,
 		preserve:   *preserve,
 		dryRun:     *dryRun,
-		serve:      *serve,
+		servePort:  int(serve),
 		tlsCert:    *tlsCert,
 		tlsKey:     *tlsKey,
 		noTLS:      *noTLS,
@@ -181,7 +240,7 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	if o.serve != "" {
+	if o.servePort != 0 {
 		return runServe(ctx, o, out, errOut)
 	}
 
@@ -364,8 +423,16 @@ func tlsSetupHint(cert, key string) string {
 		cert, key, filepath.Dir(cert), cert, key)
 }
 
+// serveAddr is the loopback bind address for a -serve port. Serving is
+// localhost-only by design (single-researcher, no auth — same trust model
+// as the rest of the tool), so the host is never operator-supplied.
+func serveAddr(port int) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+}
+
 // runServe serves the preserved bundle dir over HTTPS until interrupted.
 func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
+	addr := serveAddr(o.servePort)
 	certFile, keyFile := o.tlsCert, o.tlsKey
 	if o.noTLS {
 		certFile, keyFile = "", ""
@@ -388,9 +455,9 @@ func runServe(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	if o.noTLS {
 		scheme = "http"
 	}
-	out.printf("%s", serveBanner(scheme, o.serve, o.store))
+	out.printf("%s", serveBanner(scheme, addr, o.store))
 
-	if err := serve.New(o.store).ListenAndServe(ctx, o.serve, certFile, keyFile); err != nil {
+	if err := serve.New(o.store).ListenAndServe(ctx, addr, certFile, keyFile); err != nil {
 		errOut.line("iiifpreserve: serve:", err)
 		return 1
 	}
