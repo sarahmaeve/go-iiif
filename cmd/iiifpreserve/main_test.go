@@ -195,6 +195,24 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("browser-unsafe ports are refused", func(t *testing.T) {
+		// Representative entries from the WHATWG Fetch "bad ports" list
+		// that fall in our allowed 1024..65535 range; browsers reject
+		// these with ERR_UNSAFE_PORT, so serving on them is a dead end.
+		for _, a := range []string{"-serve=6666", "-serve=6000", "-serve=2049", "-serve=10080", "-serve=4190"} {
+			if _, err := parseArgs([]string{a}); err == nil {
+				t.Fatalf("%s: expected a browser-unsafe-port error", a)
+			}
+		}
+		// A normal port near them must still be accepted.
+		if _, err := parseArgs([]string{"-serve=8443"}); err != nil {
+			t.Fatalf("-serve=8443 (safe) should be allowed: %v", err)
+		}
+		if _, err := parseArgs([]string{"-serve=6670"}); err != nil {
+			t.Fatalf("-serve=6670 (safe) should be allowed: %v", err)
+		}
+	})
+
 	t.Run("space-separated -serve PORT is rejected with guidance", func(t *testing.T) {
 		_, err := parseArgs([]string{"-serve", "8443"})
 		if err == nil {

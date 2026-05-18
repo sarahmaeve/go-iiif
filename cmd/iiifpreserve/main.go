@@ -56,6 +56,20 @@ const (
 	maxServePort = 65535
 )
 
+// browserUnsafePorts are ports in the 1024..65535 range that Chrome and
+// Firefox refuse to connect to (ERR_UNSAFE_PORT). It is the union of
+// Chromium's net::kRestrictedPorts and Firefox's gBadPortList — both
+// conform to the WHATWG Fetch "bad ports" list. Entries below 1024 are
+// already rejected by the privileged-port check, so only the in-range
+// ones are listed. Serving exists to be opened in a browser, so binding
+// one of these is a guaranteed dead end; reject it early with a clear
+// reason instead of letting the researcher hit an opaque browser error.
+var browserUnsafePorts = map[int]struct{}{
+	1719: {}, 1720: {}, 1723: {}, 2049: {}, 3659: {}, 4045: {}, 4190: {},
+	5060: {}, 5061: {}, 6000: {}, 6566: {}, 6665: {}, 6666: {}, 6667: {},
+	6668: {}, 6669: {}, 6679: {}, 6697: {}, 10080: {},
+}
+
 // servePortFlag backs -serve as an optional-value flag: a bare `-serve`
 // selects defaultServePort, while `-serve=PORT` selects PORT. Implementing
 // IsBoolFlag is what lets the bare form parse without an argument. A zero
@@ -85,6 +99,9 @@ func (p *servePortFlag) Set(s string) error {
 	if n < minServePort || n > maxServePort {
 		return fmt.Errorf("-serve: port %d out of range; use %d..%d (ports below %d are root-only)",
 			n, minServePort, maxServePort, minServePort)
+	}
+	if _, unsafe := browserUnsafePorts[n]; unsafe {
+		return fmt.Errorf("-serve: port %d is blocked by browsers (ERR_UNSAFE_PORT); pick another", n)
 	}
 	*p = servePortFlag(n)
 	return nil
@@ -137,7 +154,7 @@ func parseArgs(args []string) (*options, error) {
 	)
 	fs.Var(&serve, "serve", fmt.Sprintf(
 		"serve the store over HTTPS on localhost instead of crawling; "+
-			"bare -serve uses :%d, or -serve=PORT (%d..%d)",
+			"bare -serve uses :%d, or -serve=PORT (%d..%d, excluding browser-blocked ports)",
 		defaultServePort, minServePort, maxServePort))
 	if err := fs.Parse(args); err != nil {
 		return nil, err
