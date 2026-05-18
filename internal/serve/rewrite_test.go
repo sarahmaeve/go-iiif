@@ -148,6 +148,50 @@ func TestRewriteManifest_CorrectsDimsToLocalInfoJSON(t *testing.T) {
 	}
 }
 
+// Gallica numbers pages f1, f2, … f10, f11, … so a bare service id like
+// ".../f1" is a string prefix of ".../f10". A prefix match that isn't
+// anchored at a path boundary lets canvas f10's image resource
+// (".../f10/full/full/0/native.jpg") match the f1 anchor, collapsing
+// pages 10–19 onto page 1 (and 100s too). Map iteration is randomized, so
+// the bug is intermittent — repeat to make the failure reliable.
+func TestRewriteManifest_PrefixMatchRespectsPathBoundary(t *testing.T) {
+	manifest := []byte(`{"sequences":[{"canvases":[
+	  {"@type":"sc:Canvas","images":[{"resource":{
+	    "@id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1/full/full/0/native.jpg",
+	    "service":{"@id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1"}}}]},
+	  {"@type":"sc:Canvas","images":[{"resource":{
+	    "@id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f10/full/full/0/native.jpg",
+	    "service":{"@id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f10"}}}]}
+	]}]}`)
+	prov := []byte(`{"images":[` +
+		`{"file":"0001.jpg","service_id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1",` +
+		`"source_url":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f1/full/full/0/native.jpg"},` +
+		`{"file":"0010.jpg","service_id":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f10",` +
+		`"source_url":"https://gallica.bnf.fr/iiif/ark:/12148/xyz/f10/full/full/0/native.jpg"}` +
+		`]}`)
+	base := "https://h/inst/slug"
+
+	for range 50 {
+		out, err := rewriteManifest(manifest, prov, base, "")
+		if err != nil {
+			t.Fatalf("rewriteManifest: %v", err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(out, &doc); err != nil {
+			t.Fatalf("rewritten manifest invalid: %v", err)
+		}
+		canvases := doc["sequences"].([]any)[0].(map[string]any)["canvases"].([]any)
+		got1 := canvases[0].(map[string]any)["images"].([]any)[0].(map[string]any)["resource"].(map[string]any)["@id"]
+		got10 := canvases[1].(map[string]any)["images"].([]any)[0].(map[string]any)["resource"].(map[string]any)["@id"]
+		if got1 != base+"/0001.jpg" {
+			t.Fatalf("canvas f1 image = %v, want %s/0001.jpg", got1, base)
+		}
+		if got10 != base+"/0010.jpg" {
+			t.Fatalf("canvas f10 image = %v, want %s/0010.jpg (page collapsed onto f1)", got10, base)
+		}
+	}
+}
+
 func TestRewriteManifest_RealV3Cookbook(t *testing.T) {
 	dir := filepath.Join("testdata", "bundle", "cookbook-v3")
 	manifest, err := os.ReadFile(filepath.Join(dir, "manifest.json"))

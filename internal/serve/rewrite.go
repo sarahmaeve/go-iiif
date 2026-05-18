@@ -156,11 +156,14 @@ func toOpenAnnotation(a annotation.Annotation) map[string]any {
 	return oa
 }
 
-// matchLocal returns the local target for an id/service string that begins
-// with a recorded original anchor, and whether one matched.
+// matchLocal returns the local target for an id/service string that is, or
+// is rooted at, a recorded original anchor, and whether one matched. The
+// prefix test is anchored at a path boundary ("anchor/"): Gallica numbers
+// pages f1, f2, … f10, so a bare service id ".../f1" is a string prefix of
+// ".../f10" — an unbounded HasPrefix would collapse pages 10–19 onto page 1.
 func matchLocal(s string, local map[string]localTarget) (localTarget, bool) {
 	for anchor, t := range local {
-		if s == anchor || strings.HasPrefix(s, anchor) {
+		if s == anchor || strings.HasPrefix(s, anchor+"/") {
 			return t, true
 		}
 	}
