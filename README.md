@@ -21,6 +21,8 @@ no external tools and the copy survives network outages.
   layer; not yet dogfooded as a whole-library run.
 - Deep zoom from local static tiles.
 - Offline W3C Web Annotation authoring, stored beside the bundle.
+- A persistent local catalogue with editable display titles and research notes;
+  catalogue requests never rescan image or tile files.
 
 ## Getting started
 

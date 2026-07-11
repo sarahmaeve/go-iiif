@@ -27,8 +27,9 @@ import (
 // Server serves a preserved-bundle directory tree as static files, bound to
 // localhost.
 type Server struct {
-	root   string
-	server *http.Server
+	root    string
+	server  *http.Server
+	catalog *catalog
 	// logf, when set, receives one line per HTTP request as
 	// "METHOD STATUS PATH" (printf-style). Used to diagnose what a viewer
 	// actually requests against the rewritten manifest / tile pyramid.
@@ -39,7 +40,11 @@ type Server struct {
 // one line per request to stderr.
 func New(root string) *Server {
 	lg := log.New(os.Stderr, "iiifserve ", log.LstdFlags)
-	return &Server{root: root, logf: lg.Printf}
+	s := &Server{root: root, catalog: newCatalog(root), logf: lg.Printf}
+	if s.catalog.loadErr != nil {
+		lg.Printf("%v; preserving the file unchanged and disabling catalogue edits", s.catalog.loadErr)
+	}
+	return s
 }
 
 // statusRecorder captures the response status so it can be logged. It
@@ -76,6 +81,15 @@ func (s *Server) Handler() http.Handler {
 	files := http.FileServer(http.Dir(s.root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clean := path.Clean(r.URL.Path)
+		if clean == catalogEditRoute {
+			s.handleCatalogEdit(w, r)
+			return
+		}
+		// The persistent catalogue is application state, not a static asset.
+		if clean == "/"+catalogDirName || strings.HasPrefix(clean, "/"+catalogDirName+"/") {
+			http.NotFound(w, r)
+			return
+		}
 		if strings.HasSuffix(clean, "/annotations") {
 			s.handleAnnotations(w, r, clean)
 			return
@@ -373,6 +387,8 @@ func (s *Server) ListenAndServe(ctx context.Context, addr, certFile, keyFile str
 // Serve serves on ln until ctx is cancelled, then shuts down gracefully.
 // Returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener, certFile, keyFile string) error {
+	s.catalog.startSizeRefresh(ctx)
+	defer s.catalog.wait()
 	s.server = &http.Server{
 		Handler:           s.logRequests(s.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,

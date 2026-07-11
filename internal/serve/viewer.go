@@ -3,14 +3,15 @@ package serve
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/institution"
@@ -43,6 +44,7 @@ var fontsFS embed.FS
 const (
 	miradorRoute     = "/__viewer__/mirador.min.js"
 	fontsRoutePrefix = "/__viewer__/fonts/"
+	catalogEditRoute = "/__catalog__/edit"
 )
 
 // indexTmpl is the landing page: a researcher with no external viewer lands
@@ -85,6 +87,17 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 .meta a{color:var(--secondary,#6b5c53);text-decoration:none;border-bottom:1px solid var(--border)}
 .meta a:hover{color:var(--accent)}
 .meta .sep{padding:0 8px;color:var(--border)}
+.notes{margin:12px 0 0;padding-left:14px;border-left:2px solid var(--border);white-space:pre-wrap;color:#403a35}
+.edit{margin-top:12px;font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:.72rem;color:var(--muted)}
+.edit summary{cursor:pointer;display:inline-block;border-bottom:1px solid var(--border)}
+.edit form{display:grid;gap:10px;margin-top:12px;padding:14px;background:var(--surface);border:1px solid var(--border)}
+.edit label{display:grid;gap:4px;text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+.edit input,.edit textarea{width:100%;border:1px solid var(--border);background:#fffdf9;color:var(--text);padding:8px 10px;
+ font:400 .95rem/1.4 "Source Serif 4",Georgia,serif;text-transform:none;letter-spacing:normal}
+.edit textarea{min-height:5rem;resize:vertical}
+.edit button{justify-self:start;border:0;background:var(--primary);color:white;padding:8px 14px;cursor:pointer;
+ font:600 .7rem "IBM Plex Mono",ui-monospace,monospace;text-transform:uppercase;letter-spacing:.1em}
+.edit button:hover{background:var(--accent)}
 .empty{font-style:italic;color:var(--muted);margin-top:32px}
 </style>
 <body>
@@ -96,6 +109,14 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 {{range .}}<article class="entry">
 <a class="title" href="/{{.Dir}}/">{{.Title}}</a>
 <p class="meta"><a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a><span class="sep">·</span>{{.Languages}}<span class="sep">·</span>{{.Pages}} pp<span class="sep">·</span>{{.Size}}</p>
+{{if .Notes}}<p class="notes">{{.Notes}}</p>{{end}}
+<details class="edit"><summary>Edit title or notes</summary>
+<form method="post" action="` + catalogEditRoute + `">
+<input type="hidden" name="dir" value="{{.Dir}}">
+<label>Display title<input name="title" maxlength="500" value="{{.CustomTitle}}" placeholder="{{.SourceTitle}}"></label>
+<label>Catalogue notes<textarea name="notes" maxlength="20000">{{.Notes}}</textarea></label>
+<button type="submit">Save catalogue entry</button>
+</form></details>
 </article>
 {{else}}<p class="empty">No preserved manifests yet.</p>
 {{end}}</main>
@@ -196,33 +217,25 @@ aside.library a[aria-current]{color:var(--accent);background:var(--surface);
 // manifest.json + provenance.json + on-disk size — no re-fetch.
 type manifestSummary struct {
 	Dir         string // viewer link target, /<Dir>/
-	Title       string
+	Title       string // effective display title (custom title, then source title)
+	SourceTitle string
+	CustomTitle string
+	Notes       string
 	Languages   string
 	Institution string // host of the original IIIF record
 	RecordURL   string // original manifest URL (the IIIF record)
 	Pages       int
 	Size        string
+
+	sourceStamp string
+	sizeBytes   int64
+	sizeKnown   bool
 }
 
-// manifestSummaries builds an index row for every preserved manifest dir at
-// any depth. Unreadable pieces degrade to placeholders rather than dropping
-// the row — a partial index still serves.
+// manifestSummaries returns the request-time in-memory catalogue. Discovery,
+// metadata parsing, and size migration happen outside HTTP request handling.
 func (s *Server) manifestSummaries() []manifestSummary {
-	var out []manifestSummary
-	_ = filepath.WalkDir(s.root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "manifest.json" {
-			return nil //nolint:nilerr // skip unreadable entries; a partial index still serves
-		}
-		dir := filepath.Dir(p)
-		rel, rerr := filepath.Rel(s.root, dir)
-		if rerr != nil || rel == "." {
-			return nil //nolint:nilerr // un-relativizable entry: skip it, keep indexing the rest
-		}
-		out = append(out, summaryFor(dir, filepath.ToSlash(rel)))
-		return nil
-	})
-	sort.Slice(out, func(i, j int) bool { return out[i].Dir < out[j].Dir })
-	return out
+	return s.catalog.list()
 }
 
 // summaryFor derives one manifestSummary from a preserved bundle dir
@@ -231,17 +244,19 @@ func (s *Server) manifestSummaries() []manifestSummary {
 func summaryFor(absDir, slug string) manifestSummary {
 	ms := manifestSummary{Dir: slug, Languages: "—", Institution: "—"}
 
-	mb, _ := os.ReadFile(filepath.Join(absDir, "manifest.json")) //nolint:gosec // G304: manifest under the served root
-	ms.Title = metadata.Title(mb)
-	if ms.Title == "" {
-		ms.Title = ms.Dir
+	manifestPath := filepath.Join(absDir, "manifest.json")
+	provenancePath := filepath.Join(absDir, "provenance.json")
+	mb, _ := os.ReadFile(manifestPath) //nolint:gosec // G304: manifest under the served root
+	ms.SourceTitle = metadata.Title(mb)
+	if ms.SourceTitle == "" {
+		ms.SourceTitle = ms.Dir
 	}
 
 	var prov struct {
 		ManifestURL string     `json:"manifest_url"`
 		Images      []struct{} `json:"images"`
 	}
-	if pb, perr := os.ReadFile(filepath.Join(absDir, "provenance.json")); perr == nil { //nolint:gosec // G304: sibling of a served manifest
+	if pb, perr := os.ReadFile(provenancePath); perr == nil { //nolint:gosec // G304: sibling of a served manifest
 		_ = json.Unmarshal(pb, &prov)
 	}
 	ms.Pages = len(prov.Images)
@@ -257,23 +272,29 @@ func summaryFor(absDir, slug string) manifestSummary {
 			ms.Languages = strings.Join(rec.Langs, ", ")
 		}
 	}
-	ms.Size = dirSize(absDir)
+	ms.sourceStamp = fileStamp(manifestPath) + ":" + fileStamp(provenancePath)
+	ms.finishDisplayFields()
 	return ms
 }
 
-// dirSize is the estimated on-disk size of a preserved bundle (images +
-// tile pyramids dominate), rendered for humans.
-func dirSize(dir string) string {
-	var total int64
-	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			if fi, ierr := d.Info(); ierr == nil {
-				total += fi.Size()
-			}
-		}
-		return nil
-	})
-	return fmt.Sprintf("%.0f MB", float64(total)/(1024*1024))
+func fileStamp(name string) string {
+	fi, err := os.Stat(name)
+	if err != nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d/%d", fi.ModTime().UnixNano(), fi.Size())
+}
+
+func (ms *manifestSummary) finishDisplayFields() {
+	ms.Title = ms.SourceTitle
+	if ms.CustomTitle != "" {
+		ms.Title = ms.CustomTitle
+	}
+	if ms.sizeKnown {
+		ms.Size = fmt.Sprintf("%.0f MB", float64(ms.sizeBytes)/(1024*1024))
+	} else {
+		ms.Size = "size calculating…"
+	}
 }
 
 // serveIndex writes the landing page: a row per preserved manifest with
@@ -294,12 +315,48 @@ type viewerPage struct {
 // with a left rail listing every preserved manuscript so the reader can
 // switch documents without leaving the viewer.
 func (s *Server) serveViewer(w http.ResponseWriter, dir string) {
-	abs := filepath.Join(s.root, filepath.FromSlash(dir))
+	cur, ok := s.catalog.get(dir)
+	if !ok {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = viewerTmpl.Execute(w, viewerPage{ //nolint:errcheck // best-effort response write; client disconnect is not actionable
-		Cur:  summaryFor(abs, dir),
+		Cur:  cur,
 		Docs: s.manifestSummaries(),
 	})
+}
+
+// handleCatalogEdit persists the researcher's display-title override and
+// free-form catalogue notes. Like annotations, this is a loopback-only,
+// single-user editing surface and needs no separate authentication layer.
+func (s *Server) handleCatalogEdit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid catalogue edit", http.StatusBadRequest)
+		return
+	}
+	dir := r.FormValue("dir")
+	title := r.FormValue("title")
+	notes := r.FormValue("notes")
+	if len(title) > 500 || len(notes) > 20000 {
+		http.Error(w, "catalogue edit is too large", http.StatusBadRequest)
+		return
+	}
+	if err := s.catalog.update(dir, title, notes); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "could not save catalogue edit", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // serveBundle writes the embedded Mirador UMD bundle.

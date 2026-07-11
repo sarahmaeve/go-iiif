@@ -106,7 +106,8 @@ func TestServer_ServesEmbeddedFont(t *testing.T) {
 
 // The index shows per-manifest info, not just the slug: a title linking to
 // the viewer, the institution linking to the original IIIF record, page
-// count, and an estimated size.
+// count, and size status. Size indexing is deliberately asynchronous so a
+// legacy library's tile tree never blocks this first response.
 func TestServer_IndexShowsRichInfo(t *testing.T) {
 	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
 	defer ts.Close()
@@ -127,9 +128,11 @@ func TestServer_IndexShowsRichInfo(t *testing.T) {
 	if !strings.Contains(body, `href="https://iiif.io/api/cookbook/recipe/0032-collection/manifest-01.json"`) {
 		t.Fatalf("index missing IIIF-record link to manifest_url; body=%s", body)
 	}
-	// Page count (cookbook-v3 provenance has 1 image) and an estimated size.
-	if !strings.Contains(body, "1") || !strings.Contains(strings.ToLower(body), "mb") {
-		t.Fatalf("index missing page count / estimated size; body=%s", body)
+	// Page count (cookbook-v3 provenance has 1 image) and non-blocking size
+	// status. A real Serve run fills and persists the exact MB value in the
+	// background; a bare test Handler has not started that migration.
+	if !strings.Contains(body, "1") || !strings.Contains(body, "size calculating…") {
+		t.Fatalf("index missing page count / asynchronous size status; body=%s", body)
 	}
 }
 
