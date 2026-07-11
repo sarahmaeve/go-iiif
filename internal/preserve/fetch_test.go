@@ -1,6 +1,7 @@
 package preserve
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -60,17 +61,34 @@ func (s seqFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 
 func TestFetchImage_FallsBackAndReportsVariant(t *testing.T) {
 	const sid = "https://example.org/iiif/x"
-	f := seqFetcher{sid: {body: []byte("\xff\xd8jpegbytes")}} // only bare works
+	image := synthJPEG(t, 32, 24)
+	f := seqFetcher{sid: {body: image}} // only bare works
 
 	data, used, variant, err := FetchImage(context.Background(), f, sid, -1)
 	if err != nil {
 		t.Fatalf("FetchImage: %v", err)
 	}
-	if string(data) != "\xff\xd8jpegbytes" || used != sid {
-		t.Fatalf("data=%q used=%q", data, used)
+	if !bytes.Equal(data, image) || used != sid {
+		t.Fatalf("data differs=%v used=%q", !bytes.Equal(data, image), used)
 	}
 	if variant != 2 {
 		t.Fatalf("variant = %d, want 2 (bare)", variant)
+	}
+}
+
+func TestFetchImage_SkipsInvalidSuccessfulResponse(t *testing.T) {
+	const sid = "https://example.org/iiif/x"
+	good := synthJPEG(t, 32, 24)
+	f := seqFetcher{
+		sid + "/full/max/0/default.jpg":  {body: []byte("not an image")},
+		sid + "/full/full/0/default.jpg": {body: good},
+	}
+	data, used, variant, err := FetchImage(context.Background(), f, sid, -1)
+	if err != nil {
+		t.Fatalf("FetchImage: %v", err)
+	}
+	if !bytes.Equal(data, good) || used != sid+"/full/full/0/default.jpg" || variant != 1 {
+		t.Fatalf("got used=%q variant=%d; want valid full/full fallback", used, variant)
 	}
 }
 
@@ -88,6 +106,7 @@ type countFetcher struct {
 	calls       []string
 	manifestURL string
 	manifest    string
+	image       []byte
 }
 
 func (c *countFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
@@ -101,7 +120,7 @@ func (c *countFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 		return nil, source.ErrNotFound
 	}
 	if strings.Contains(url, "/full/full/") {
-		return []byte("\xff\xd8jpeg"), nil
+		return c.image, nil
 	}
 	return nil, source.ErrNotFound
 }
@@ -127,7 +146,7 @@ func TestPreserve_MemoizesWorkingVariant(t *testing.T) {
 		`{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/img2"}}}]},` +
 		`{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/img3"}}}]}` +
 		`]}]}`
-	f := &countFetcher{manifestURL: mURL, manifest: manifest}
+	f := &countFetcher{manifestURL: mURL, manifest: manifest, image: synthJPEG(t, 32, 24)}
 
 	sum, err := Preserve(context.Background(), f, NewLocalBlobStore(t.TempDir()), mURL, []byte(manifest))
 	if err != nil {

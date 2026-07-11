@@ -96,13 +96,15 @@ You'll see per-image progress, ending with:
 
 ```
 iiifpreserve: [1/1] 0001.jpg stored
-iiifpreserve: preserved 1 image(s) to ~/iiif-images/iiif.io/…manifest-01.json (skipped 0, 0 failed)
+iiifpreserve: preserved 1 image(s) to ~/iiif-images/iiif.io/…manifest-01.json (reused 0, repaired 0)
 ```
 
 It downloaded into `~/iiif-images` (the default library), nested by
 institution, and built a local IIIF level-0 tile pyramid for deep zoom.
-Re-running is idempotent — already-stored images are skipped, so an
-interrupted download just continues.
+Re-running is idempotent: valid stored images are reused without an image
+request. If interruption happened after a JPEG was committed but before its
+tile pyramid completed, the pyramid is rebuilt from the local JPEG. A bundle
+only appears in the catalogue after every required page succeeds.
 
 > Preview first without downloading: add `-dry-run` (prints the image
 > count and exits).
@@ -205,8 +207,13 @@ request-relative, so the library works no matter where it lives.
   iiifpreserve -collection <collection-url> -lang fr -from 1400 -to 1500
   ```
   Filters are lenient: an item missing the filtered field is kept, never
-  silently dropped. `-workers N` parallelises across hosts; `-journal
-  <file>` makes a large crawl resumable.
+  silently dropped. `-workers N` parallelises across hosts. Real collection
+  runs are automatically resumable: completion state is stored under the
+  library's `.iiifpreserve/ingest/` directory and isolated by collection URL,
+  filters, and institution mapping. Rerun the same command to continue.
+  `-dry-run` never reads or changes completion state. The former `-journal
+  <file>` option is deprecated and now only migrates that file into the
+  automatic state for the current query.
 
 - **Gallica/BnF** — works, but BnF is rate-limited (13 s/host by design),
   so a manuscript takes a while. It's resumable and shows per-page

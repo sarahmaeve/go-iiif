@@ -1,9 +1,12 @@
 package preserve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image/jpeg"
 	"regexp"
 	"strings"
 
@@ -17,9 +20,15 @@ type Summary struct {
 	Images      int    // canvas images found
 	Stored      int    // images newly fetched and stored
 	Skipped     int    // images already present (idempotent re-run)
+	Repaired    int    // existing images whose missing tile pyramids were rebuilt
 	Tiled       int    // images for which a level0 tile pyramid was built
 	Failures    []string
 }
+
+// ErrIncomplete means one or more required page images could not be
+// preserved. The successfully committed page files remain as restart state,
+// but no final provenance completion marker is written.
+var ErrIncomplete = errors.New("preserve: bundle incomplete")
 
 // defaultTileSize is the level0 tile edge. 512 balances file count against
 // zoom granularity and matches the common OpenSeadragon/Mirador default.
@@ -82,7 +91,7 @@ func dirFor(manifestURL string) string {
 type ProgressEvent struct {
 	Index, Total int    // 1-based image index, total images in the manifest
 	File         string // e.g. "0042.jpg"
-	Action       string // "stored" | "skipped" | "failed"
+	Action       string // "stored" | "skipped" | "repaired" | "failed"
 }
 
 type preserveConfig struct{ progress func(ProgressEvent) }
@@ -97,8 +106,9 @@ func WithProgress(fn func(ProgressEvent)) Option {
 
 // Preserve fetches every canvas image of a matched manifest at the largest
 // available size and stores the images, the manifest, and a provenance record
-// under one BlobStore prefix. A single image failure is recorded but does not
-// abort the manifest; already-stored images are skipped (idempotent).
+// under one BlobStore prefix. Already-stored valid images are reused without
+// an HTTP request, and missing tile pyramids are rebuilt from those local
+// images. Provenance is written last and only for a complete bundle.
 func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, manifestURL string, manifestBytes []byte, opts ...Option) (Summary, error) {
 	var cfg preserveConfig
 	for _, o := range opts {
@@ -117,6 +127,20 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 
 	dir := dirFor(manifestURL)
 	sum := Summary{ManifestURL: manifestURL, Dir: dir, Images: len(images)}
+	if err := ctx.Err(); err != nil {
+		return sum, err
+	}
+	provenanceKey := dir + "/provenance.json"
+	previous, err := previousProvenance(ctx, store, provenanceKey)
+	if err != nil {
+		return sum, err
+	}
+	// provenance.json is the catalogue's completion marker. Invalidate it
+	// before changing the bundle so a crash or failed refresh cannot expose a
+	// partially updated manuscript as complete.
+	if err := store.Delete(ctx, provenanceKey); err != nil {
+		return sum, fmt.Errorf("preserve: invalidating completion marker: %w", err)
+	}
 
 	if err := store.Put(ctx, dir+"/manifest.json", manifestBytes); err != nil {
 		return sum, fmt.Errorf("preserve: storing manifest: %w", err)
@@ -131,6 +155,9 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 	// strict per-host throttle, e.g. Gallica's 13s). -1 = unknown.
 	preferred := -1
 	for i, img := range images {
+		if err := ctx.Err(); err != nil {
+			return sum, err
+		}
 		file := fmt.Sprintf("%04d.jpg", i+1)
 		key := dir + "/" + file
 
@@ -141,21 +168,58 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			continue
 		}
 		if exists {
-			sum.Skipped++
-			entry := provenanceImg{File: file, ServiceID: img.ServiceID}
-			prefix := fmt.Sprintf("%04d", i+1)
-			if ok, _ := store.Exists(ctx, dir+"/"+prefix+"/info.json"); ok {
-				sum.Tiled++
-				entry.TileDir = prefix
+			data, readErr := store.Get(ctx, key)
+			if readErr != nil {
+				sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %v", file, readErr))
+				report(i+1, sum.Images, file, "failed")
+				continue
 			}
-			prov.Images = append(prov.Images, entry)
-			report(i+1, sum.Images, file, "skipped")
-			continue
+			if _, decodeErr := jpeg.DecodeConfig(bytes.NewReader(data)); decodeErr == nil {
+				sum.Skipped++
+				entry := provenanceImg{File: file, ServiceID: img.ServiceID}
+				if old, ok := previous[file]; ok && old.ServiceID == img.ServiceID {
+					entry.SourceURL = old.SourceURL
+				}
+				prefix := fmt.Sprintf("%04d", i+1)
+				complete, completeErr := tilePyramidComplete(ctx, store, dir+"/"+prefix, data, defaultTileSize)
+				if completeErr == nil && complete {
+					sum.Tiled++
+					entry.TileDir = prefix
+					prov.Images = append(prov.Images, entry)
+					report(i+1, sum.Images, file, "skipped")
+					continue
+				}
+				if _, tileErr := renderTilePyramid(ctx, store, dir+"/"+prefix, data, defaultTileSize); tileErr == nil {
+					sum.Tiled++
+					sum.Repaired++
+					entry.TileDir = prefix
+					prov.Images = append(prov.Images, entry)
+					report(i+1, sum.Images, file, "repaired")
+					continue
+				} else if err := ctx.Err(); err != nil {
+					return sum, err
+				}
+				// Tiling remains best-effort. The valid flat JPEG is a complete
+				// preservation artifact even when a pyramid cannot be produced.
+				prov.Images = append(prov.Images, entry)
+				report(i+1, sum.Images, file, "skipped")
+				continue
+			}
+			// A corrupt local JPEG is not a checkpoint. Fetch just this page
+			// again and atomically replace it below.
 		}
 
 		data, used, variant, err := FetchImage(ctx, fetcher, img.ServiceID, preferred)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return sum, ctxErr
+			}
 			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %v", file, err))
+			report(i+1, sum.Images, file, "failed")
+			continue
+		}
+		if _, err := jpeg.DecodeConfig(bytes.NewReader(data)); err != nil {
+			sum.Failures = append(sum.Failures, fmt.Sprintf("%s: downloaded image is not a readable JPEG: %v", file, err))
 			report(i+1, sum.Images, file, "failed")
 			continue
 		}
@@ -174,19 +238,74 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		if _, terr := renderTilePyramid(ctx, store, dir+"/"+prefix, data, defaultTileSize); terr == nil {
 			sum.Tiled++
 			entry.TileDir = prefix
+		} else if err := ctx.Err(); err != nil {
+			return sum, err
 		}
 		prov.Images = append(prov.Images, entry)
 		report(i+1, sum.Images, file, "stored")
+	}
+
+	if len(sum.Failures) > 0 || len(prov.Images) != len(images) {
+		return sum, fmt.Errorf("%w: %d of %d required image(s) failed", ErrIncomplete, len(sum.Failures), len(images))
 	}
 
 	provJSON, err := json.MarshalIndent(prov, "", "  ")
 	if err != nil {
 		return sum, fmt.Errorf("preserve: encoding provenance: %w", err)
 	}
-	if err := store.Put(ctx, dir+"/provenance.json", provJSON); err != nil {
+	if err := store.Put(ctx, provenanceKey, provJSON); err != nil {
 		return sum, fmt.Errorf("preserve: storing provenance: %w", err)
 	}
 	return sum, nil
+}
+
+func previousProvenance(ctx context.Context, store BlobStore, key string) (map[string]provenanceImg, error) {
+	out := make(map[string]provenanceImg)
+	exists, err := store.Exists(ctx, key)
+	if err != nil || !exists {
+		return out, err
+	}
+	b, err := store.Get(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("preserve: reading existing provenance: %w", err)
+	}
+	return decodePreviousProvenance(b), nil
+}
+
+func decodePreviousProvenance(b []byte) map[string]provenanceImg {
+	out := make(map[string]provenanceImg)
+	var old provenance
+	if json.Unmarshal(b, &old) != nil {
+		return out // corrupt completion marker is replaced if recovery succeeds
+	}
+	for _, img := range old.Images {
+		out[img.File] = img
+	}
+	return out
+}
+
+func tilePyramidComplete(ctx context.Context, store BlobStore, prefix string, jpegBytes []byte, tileSize int) (bool, error) {
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(jpegBytes))
+	if err != nil {
+		return false, fmt.Errorf("preserve: inspecting local JPEG for tile repair: %w", err)
+	}
+	plan := tilePlan(cfg.Width, cfg.Height, tileSize)
+	wantInfo, err := infoJSON(plan, prefix)
+	if err != nil {
+		return false, err
+	}
+	infoExists, err := store.Exists(ctx, prefix+"/info.json")
+	if err != nil || !infoExists {
+		return false, err
+	}
+	gotInfo, err := store.Get(ctx, prefix+"/info.json")
+	if err != nil || !bytes.Equal(bytes.TrimSpace(gotInfo), bytes.TrimSpace(wantInfo)) {
+		return false, err
+	}
+	// renderTilePyramid writes info.json last, after every derived image.
+	// Its matching atomic presence is therefore the O(1) pyramid commit
+	// marker. Doctor performs the deliberately expensive all-tile audit.
+	return true, nil
 }
 
 // extractLicense records (does not enforce) any license/rights string for

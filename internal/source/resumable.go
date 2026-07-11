@@ -1,11 +1,13 @@
 package source
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"iter"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -53,27 +55,40 @@ type FileJournal struct {
 // OpenFileJournal opens (creating if needed) the journal at path and loads
 // any previously recorded completions.
 func OpenFileJournal(path string) (*FileJournal, error) {
-	// G304: path is an explicit operator-supplied CLI flag (-journal), the
-	// crawl checkpoint location — not attacker-controlled input.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644) //nolint:gosec // G304: operator-supplied journal path
+	// path is either the automatic store-scoped checkpoint or the explicit
+	// operator-supplied legacy -journal migration source.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644) //nolint:gosec // checkpoint path selected by the CLI
 	if err != nil {
 		return nil, fmt.Errorf("source: opening journal %s: %w", path, err)
 	}
 	j := &FileJournal{f: f, done: make(map[string]struct{})}
 
-	if _, err := f.Seek(0, 0); err != nil {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("source: rewinding journal %s: %w", path, err)
 	}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			j.done[line] = struct{}{}
-		}
-	}
-	if err := sc.Err(); err != nil {
+	b, err := io.ReadAll(f)
+	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("source: reading journal %s: %w", path, err)
+	}
+	// MarkDone appends and syncs one URL plus newline. If the process is
+	// killed inside that final write, ignore and truncate the unterminated
+	// tail. The corresponding work may be repeated, but can never be falsely
+	// skipped or concatenate with the next completion record.
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		lastNewline := bytes.LastIndexByte(b, '\n')
+		completeLen := lastNewline + 1
+		b = b[:completeLen]
+		if err := f.Truncate(int64(completeLen)); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("source: repairing journal %s: %w", path, err)
+		}
+	}
+	for _, rawLine := range bytes.Split(b, []byte{'\n'}) {
+		if line := strings.TrimSpace(string(rawLine)); line != "" {
+			j.done[line] = struct{}{}
+		}
 	}
 	return j, nil
 }
@@ -99,6 +114,20 @@ func (j *FileJournal) MarkDone(u string) error {
 	}
 	j.done[u] = struct{}{}
 	return nil
+}
+
+// Entries returns a stable snapshot of every completed URL. It exists for
+// migrating the former operator-supplied journal into query-scoped automatic
+// ingest state; normal resume checks should use Done.
+func (j *FileJournal) Entries() []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]string, 0, len(j.done))
+	for u := range j.done {
+		out = append(out, u)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Close releases the underlying journal file.

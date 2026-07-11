@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"iter"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -17,6 +18,36 @@ func (s staticSource) Manifests(context.Context) iter.Seq2[string, error] {
 				return
 			}
 		}
+	}
+}
+
+func TestFileJournal_DiscardsInterruptedTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "crawl.journal")
+	const complete = "https://h.example.org/complete.json"
+	if err := os.WriteFile(path, []byte(complete+"\nhttps://h.example.org/part"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenFileJournal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !j.Done(complete) || j.Done("https://h.example.org/part") {
+		t.Fatalf("journal recovery complete=%v partial=%v", j.Done(complete), j.Done("https://h.example.org/part"))
+	}
+	const next = "https://h.example.org/next.json"
+	if err := j.MarkDone(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := complete + "\n" + next + "\n"
+	if string(b) != want {
+		t.Fatalf("repaired journal = %q, want %q", b, want)
 	}
 }
 
@@ -63,6 +94,12 @@ func TestFileJournal_PersistsAcrossReopen(t *testing.T) {
 	if err := j1.MarkDone(url); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
+	if got := j1.Entries(); len(got) != 1 || got[0] != url {
+		t.Fatalf("Entries = %v, want [%s]", got, url)
+	}
+	if err := j1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	// Reopen from the same path: completion must survive a process restart.
 	j2, err := OpenFileJournal(path)
@@ -74,5 +111,8 @@ func TestFileJournal_PersistsAcrossReopen(t *testing.T) {
 	}
 	if j2.Done("https://h.example.org/other.json") {
 		t.Fatal("unrelated url reported done")
+	}
+	if err := j2.Close(); err != nil {
+		t.Fatalf("Close reopened journal: %v", err)
 	}
 }

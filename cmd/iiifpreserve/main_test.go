@@ -515,10 +515,12 @@ func (f *recordingFetcher) Fetch(context.Context, string) ([]byte, error) {
 // recordingStore counts Put calls so a dry run can be proven not to write.
 type recordingStore struct{ puts int }
 
-func (s *recordingStore) Put(context.Context, string, []byte) error { s.puts++; return nil }
+func (s *recordingStore) Put(context.Context, string, []byte) error   { s.puts++; return nil }
+func (s *recordingStore) Get(context.Context, string) ([]byte, error) { return nil, os.ErrNotExist }
 func (s *recordingStore) Exists(context.Context, string) (bool, error) {
 	return false, nil
 }
+func (s *recordingStore) Delete(context.Context, string) error { return nil }
 
 // TestCrawl_DryRunEnumeratesWithoutDownloading is the real wiring test: it
 // drives the crawl loop with a Match carrying a 2-image manifest and a
@@ -542,10 +544,10 @@ func TestCrawl_DryRunEnumeratesWithoutDownloading(t *testing.T) {
 	out := &cliWriter{w: &sb}
 	errOut := &cliWriter{w: io.Discard}
 
-	n, matched, images := crawl(context.Background(), results, fetcher, store, true /*dryRun*/, 0, out, errOut)
+	n, matched, images, failures := crawl(context.Background(), results, nil, fetcher, store, true /*dryRun*/, 0, out, errOut)
 
-	if n != 2 || matched != 1 || images != 2 {
-		t.Fatalf("n,matched,images = %d,%d,%d; want 2,1,2", n, matched, images)
+	if n != 2 || matched != 1 || images != 2 || failures != 0 {
+		t.Fatalf("n,matched,images,failures = %d,%d,%d,%d; want 2,1,2,0", n, matched, images, failures)
 	}
 	if fetcher.calls != 0 {
 		t.Fatalf("dry run fetched %d time(s); it must not download anything", fetcher.calls)
@@ -555,6 +557,21 @@ func TestCrawl_DryRunEnumeratesWithoutDownloading(t *testing.T) {
 	}
 	if !contains(sb.String(), "2 image(s)") || !contains(sb.String(), "dry-run") {
 		t.Fatalf("output = %q, want the per-work count and a dry-run marker", sb.String())
+	}
+}
+
+func TestCrawl_CountsFailedManifestForExitStatus(t *testing.T) {
+	results := func(yield func(pipeline.Result) bool) {
+		yield(pipeline.Result{ManifestURL: "https://ex.org/broken", Err: errBoom})
+	}
+	var stdout, stderr strings.Builder
+	n, matched, images, failures := crawl(context.Background(), results, nil, &recordingFetcher{}, nil, false, 0,
+		&cliWriter{w: &stdout}, &cliWriter{w: &stderr})
+	if n != 1 || matched != 0 || images != 0 || failures != 1 {
+		t.Fatalf("crawl = %d,%d,%d,%d; want 1,0,0,1", n, matched, images, failures)
+	}
+	if !contains(stdout.String(), "ERROR") || !contains(stdout.String(), "boom") {
+		t.Fatalf("stdout = %q, want visible pipeline error", stdout.String())
 	}
 }
 

@@ -88,6 +88,9 @@ func infoJSON(p TilePlan, id string) ([]byte, error) {
 // "<prefix>/info.json". High-quality CatmullRom downscaling. The returned
 // plan lets the caller record provenance / re-point the manifest.
 func renderTilePyramid(ctx context.Context, store BlobStore, prefix string, jpegBytes []byte, tileSize int) (TilePlan, error) {
+	if err := ctx.Err(); err != nil {
+		return TilePlan{}, err
+	}
 	src, err := jpeg.Decode(bytes.NewReader(jpegBytes))
 	if err != nil {
 		return TilePlan{}, fmt.Errorf("preserve: decoding image for tiling: %w", err)
@@ -96,6 +99,9 @@ func renderTilePyramid(ctx context.Context, store BlobStore, prefix string, jpeg
 	p := tilePlan(b.Dx(), b.Dy(), tileSize)
 
 	put := func(key string, w, h int, sr image.Rectangle) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		dst := image.NewRGBA(image.Rect(0, 0, w, h))
 		xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, sr, xdraw.Src, nil)
 		var buf bytes.Buffer

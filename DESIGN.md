@@ -112,8 +112,13 @@ Per-host token-bucket rate limit (default 750 ms base spacing + a random
 pad, a uniform multiple of 30 ms in [30, 600] ms, so timing isn't perfectly
 periodic; Gallica keeps a deliberate fixed 13 s, no jitter), global
 concurrency cap, exponential backoff on
-429/503, conditional GET so re-runs are cheap, content-hash dedup, resumable
-checkpoint/journal so an interrupted large crawl restarts where it stopped.
+429/503, and an automatic query-scoped completion ledger under
+`.iiifpreserve/ingest/`. Its stable fingerprint includes collection URL,
+language/date/place filters, filter semantics version, and the canonical
+institution field mappings, plus a preservation-semantics version. Durable preserves and no-match decisions are
+recorded; failures and dry runs are not. Reopening repairs an interrupted
+journal tail. Conditional-GET and content-dedup primitives exist, but durable
+CLI wiring remains planned (§7 / `planning/SOURCE_INGESTION.md`).
 **Bot-wall stance:** present an honest identifying User-Agent (a one-time
 public-domain preservation fetch is not abusive) rather than spoofing a
 browser — bot-walls like Anubis (which Bodleian uses) add suspicion weight
@@ -136,8 +141,10 @@ directory of per-canvas JPEGs + a local IIIF level0 tile pyramid per image
 `manifest.json` + a provenance log (manifest URL, recorded license,
 per-image source URLs and `tile_dir`). The root is institution-nested
 (`<root>/<host>/<slug>/`). Writes are atomic (temp+rename); re-runs skip
-already-stored images. Tiling is best-effort: an undecodable image keeps
-just the flat JPEG.
+valid already-stored images without HTTP and repair a missing pyramid from the
+local JPEG. Tiling is best-effort. `provenance.json` is written last only when
+all required page images succeed, making it the atomic bundle completion
+marker used by the catalogue.
 
 The saved `manifest.json` is stored **unmodified** (fidelity/provenance);
 rewriting happens at serve time (§4.5), not on disk.
@@ -261,7 +268,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
 | HTTPS `Fetcher` (HTTPS-only enforced, std TLS verify; **honest identifying UA** by default with per-host browser-spoof override only where forced e.g. Gallica; honest `Accept`; status mapping; **rejects HTML interstitials** so a bot-wall/error page is never archived) | ✅ done | `internal/source` |
-| Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff, conditional GET, content-hash dedup, resumable journal | ✅ done | `internal/source` |
+| Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff, plus automatic query-aware completion ledger (durable/no-match outcomes only; dry-run isolated; crash-tail repair; deprecated `-journal` migration). Conditional-GET and content-dedup primitives exist but are not yet wired durably into CLI runs | ✅ core / ◐ cache pending | `internal/source`, `cmd/iiifpreserve` |
 | End-to-end classification pipeline | ✅ done | `internal/pipeline` |
 | Concurrent pipeline fan-out (opt-in `Workers`; per-host politeness preserved; live multi-host verified) | ✅ done | `internal/pipeline` |
 | CLI entrypoint | ✅ done (provisional name) | `cmd/iiifpreserve` |
@@ -271,7 +278,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Per-host `RatePolicy` (default 750ms + 30–600ms jitter; built-in Gallica fixed 13s, no jitter) | ✅ done | `internal/source` |
 | Canvas image enumeration (v2 + v3) | ✅ done | `internal/preserve` |
 | Largest-image fetch (`/full/max`→`/full/full`→bare); **working variant memoized per manifest** (skip dead probe after page 1, ~2× on Gallica) | ✅ done | `internal/preserve` |
-| `Preserve`: store JPEGs + manifest + provenance; idempotent (resumable); per-image fault-tolerant; `WithProgress` per-image events | ✅ done | `internal/preserve` |
+| `Preserve`: store validated JPEGs + manifest + completion-safe provenance; idempotent restart reuses local pages without HTTP, repairs uncommitted pyramids locally, preserves successful pages across failures, and returns `ErrIncomplete` without exposing a partial bundle; `WithProgress` per-image events | ✅ done | `internal/preserve` |
 | CLI `-manifest` per-image progress to stderr (`[N/total] file action`) | ✅ done | `cmd/iiifpreserve` |
 | `BlobStore` (`local`, atomic writes) | ✅ done | `internal/preserve` |
 | `pipeline.Result` carries manifest bytes; storage root `-store` > config (`store=`) > `~/iiif-images`; `-dry-run` classify-only | ✅ done | `cmd/iiifpreserve` |

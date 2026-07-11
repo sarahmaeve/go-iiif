@@ -145,7 +145,7 @@ func parseArgs(args []string) (*options, error) {
 		place          = fs.String("place", "", "comma-separated place substrings")
 		max            = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
 		workers        = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
-		journal        = fs.String("journal", "", "path to a resumable crawl journal (optional)")
+		journal        = fs.String("journal", "", "deprecated crawl journal to migrate into automatic query-scoped ingest state")
 		store          = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
 		preserve       = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun         = fs.Bool("dry-run", false, "classify only; do not download images")
@@ -296,25 +296,40 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	// fetches so a single per-host rate limiter governs all traffic.
 	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
 
+	registry := institution.Builtin()
 	var src source.Source = source.NewCollectionSource(fetcher, o.collection)
-	if o.journal != "" {
-		j, err := source.OpenFileJournal(o.journal)
+	var completionJournal source.Journal
+	if !o.dryRun {
+		state, err := openIngestState(o.store, o, registry)
 		if err != nil {
 			errOut.line("iiifpreserve:", err)
 			return 1
 		}
 		defer func() {
-			if cerr := j.Close(); cerr != nil {
-				errOut.line("iiifpreserve: closing journal:", cerr)
+			if cerr := state.Close(); cerr != nil {
+				errOut.line("iiifpreserve: closing ingest state:", cerr)
 			}
 		}()
-		src = source.NewResumableSource(src, j)
+		if o.journal != "" {
+			migrated, migrateErr := state.migrateLegacy(o.journal)
+			if migrateErr != nil {
+				errOut.line("iiifpreserve: migrating deprecated -journal:", migrateErr)
+				return 1
+			}
+			errOut.printf("iiifpreserve: migrated %d completion(s) from deprecated -journal\n", migrated)
+		}
+		completionJournal = state.journal
+		src = source.NewResumableSource(src, completionJournal)
+		errOut.printf("iiifpreserve: ingest run %s (%d manifest(s) already complete)\n",
+			state.descriptor.Fingerprint[:12], len(state.journal.Entries()))
+	} else if o.journal != "" {
+		errOut.line("iiifpreserve: WARNING -journal is ignored by -dry-run; dry runs never alter ingest state")
 	}
 
 	p := pipeline.New(pipeline.Config{
 		Source:       src,
 		Fetcher:      fetcher,
-		Institutions: institution.Builtin(),
+		Institutions: registry,
 		Filter:       o.filter(),
 		Workers:      o.workers,
 	})
@@ -324,10 +339,14 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		store = preserve.NewLocalBlobStore(o.store)
 	}
 
-	n, matched, images := crawl(ctx, p.Run(ctx), fetcher, store, o.dryRun, o.max, out, errOut)
+	n, matched, images, failures := crawl(ctx, p.Run(ctx), completionJournal, fetcher, store, o.dryRun, o.max, out, errOut)
 	errOut.line(runSummary(o.dryRun, n, matched, images))
 
 	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	if failures > 0 {
+		errOut.printf("iiifpreserve: %d manifest(s) incomplete or failed; rerun to resume\n", failures)
 		return 1
 	}
 	return 0
@@ -396,7 +415,7 @@ func runDoctor(o *options, out, errOut *cliWriter) int {
 // preserves the images. It returns the manifest, match, and image tallies.
 // A dry run short-circuits before any download even when store is non-nil,
 // so the no-network guarantee does not depend on the caller nilling store.
-func crawl(ctx context.Context, results iter.Seq[pipeline.Result], fetcher source.Fetcher, store preserve.BlobStore, dryRun bool, max int, out, errOut *cliWriter) (n, matched, images int) {
+func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal source.Journal, fetcher source.Fetcher, store preserve.BlobStore, dryRun bool, max int, out, errOut *cliWriter) (n, matched, images, failures int) {
 	for r := range results {
 		out.line(formatResult(r))
 		if out.err != nil {
@@ -404,12 +423,17 @@ func crawl(ctx context.Context, results iter.Seq[pipeline.Result], fetcher sourc
 			break
 		}
 		n++
+		if r.Err != nil {
+			failures++
+		}
+		completed := r.Err == nil && r.Class == metadata.NoMatch && !dryRun
 		if r.Err == nil && r.Class == metadata.Match {
 			matched++
 			switch {
 			case dryRun:
 				cnt, line, err := dryRunLine(r.Manifest)
 				if err != nil {
+					failures++
 					errOut.line("iiifpreserve: enumerating", r.ManifestURL, "::", err)
 				} else {
 					images += cnt
@@ -418,19 +442,27 @@ func crawl(ctx context.Context, results iter.Seq[pipeline.Result], fetcher sourc
 			case store != nil:
 				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest)
 				if err != nil {
+					failures++
 					errOut.line("iiifpreserve: preserve", r.ManifestURL, "::", err)
 				} else {
 					images += sum.Stored
-					out.printf("  preserved %d image(s) to %s (skipped %d, %d failed)\n",
-						sum.Stored, sum.Dir, sum.Skipped, len(sum.Failures))
+					completed = true
+					out.printf("  preserved %d image(s) to %s (reused %d, repaired %d)\n",
+						sum.Stored, sum.Dir, sum.Skipped, sum.Repaired)
 				}
+			}
+		}
+		if completed && journal != nil {
+			if err := journal.MarkDone(r.ManifestURL); err != nil {
+				failures++
+				errOut.line("iiifpreserve: recording ingest completion", r.ManifestURL, "::", err)
 			}
 		}
 		if max > 0 && n >= max {
 			break
 		}
 	}
-	return n, matched, images
+	return n, matched, images, failures
 }
 
 // dryRunLine reports how many images a matched manifest holds, without
@@ -498,11 +530,11 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	})
 	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body, progress)
 	if err != nil {
-		errOut.line("iiifpreserve: preserve:", err)
+		errOut.line("iiifpreserve:", err)
 		return 1
 	}
-	out.printf("iiifpreserve: preserved %d image(s) to %s/%s (skipped %d, %d failed)\n",
-		sum.Stored, o.store, sum.Dir, sum.Skipped, len(sum.Failures))
+	out.printf("iiifpreserve: preserved %d image(s) to %s/%s (reused %d, repaired %d)\n",
+		sum.Stored, o.store, sum.Dir, sum.Skipped, sum.Repaired)
 	if out.err != nil || errOut.err != nil {
 		return 1
 	}

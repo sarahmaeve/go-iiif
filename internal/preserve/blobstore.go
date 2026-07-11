@@ -19,7 +19,9 @@ var ErrKeyEscapesRoot = errors.New("preserve: blob key escapes store root")
 // paths). Local first; the interface keeps other backends possible later.
 type BlobStore interface {
 	Put(ctx context.Context, key string, data []byte) error
+	Get(ctx context.Context, key string) ([]byte, error)
 	Exists(ctx context.Context, key string) (bool, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // LocalBlobStore writes blobs as files under a root directory. Writes are
@@ -71,6 +73,18 @@ func (s *LocalBlobStore) Put(_ context.Context, key string, data []byte) error {
 	return nil
 }
 
+func (s *LocalBlobStore) Get(_ context.Context, key string) ([]byte, error) {
+	p, err := s.path(key)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // path is confined to the configured store root
+	if err != nil {
+		return nil, fmt.Errorf("preserve: reading %s: %w", key, err)
+	}
+	return b, nil
+}
+
 func (s *LocalBlobStore) Exists(_ context.Context, key string) (bool, error) {
 	p, err := s.path(key)
 	if err != nil {
@@ -84,4 +98,15 @@ func (s *LocalBlobStore) Exists(_ context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("preserve: stat %s: %w", key, err)
+}
+
+func (s *LocalBlobStore) Delete(_ context.Context, key string) error {
+	p, err := s.path(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("preserve: deleting %s: %w", key, err)
+	}
+	return nil
 }

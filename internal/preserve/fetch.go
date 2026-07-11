@@ -1,8 +1,10 @@
 package preserve
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image/jpeg"
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/source"
@@ -41,7 +43,7 @@ func imageURLCandidates(serviceID string, preferred int) []string {
 
 // FetchImage downloads the largest available image for serviceID, trying the
 // candidates (preferred suffix first when given) and returning the first
-// non-empty response, the URL that worked, and the suffix index that worked
+// readable JPEG response, the URL that worked, and the suffix index that worked
 // so the caller can memoize it for the rest of a manifest — under a strict
 // per-host throttle, re-probing a known-dead variant on every page is the
 // dominant cost.
@@ -68,6 +70,10 @@ func FetchImage(ctx context.Context, fetcher source.Fetcher, serviceID string, p
 		}
 		if len(body) == 0 {
 			lastErr = fmt.Errorf("preserve: empty body from %s", url)
+			continue
+		}
+		if _, decodeErr := jpeg.DecodeConfig(bytes.NewReader(body)); decodeErr != nil {
+			lastErr = fmt.Errorf("preserve: response from %s is not a readable JPEG: %w", url, decodeErr)
 			continue
 		}
 		return body, url, i, nil

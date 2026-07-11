@@ -40,6 +40,27 @@ func TestLocalBlobStore_Exists(t *testing.T) {
 	}
 }
 
+func TestLocalBlobStore_GetAndDelete(t *testing.T) {
+	bs := NewLocalBlobStore(t.TempDir())
+	ctx := context.Background()
+	if err := bs.Put(ctx, "a/b.jpg", []byte("image")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := bs.Get(ctx, "a/b.jpg")
+	if err != nil || string(got) != "image" {
+		t.Fatalf("Get = %q, %v; want image, nil", got, err)
+	}
+	if err := bs.Delete(ctx, "a/b.jpg"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := bs.Delete(ctx, "a/b.jpg"); err != nil {
+		t.Fatalf("second Delete should be idempotent: %v", err)
+	}
+	if ok, err := bs.Exists(ctx, "a/b.jpg"); err != nil || ok {
+		t.Fatalf("Exists after Delete = %v, %v; want false, nil", ok, err)
+	}
+}
+
 func TestLocalBlobStore_PutIsAtomicNoPartialOnInterrupt(t *testing.T) {
 	// A successful Put must never leave a temp file behind in the target dir.
 	root := t.TempDir()
