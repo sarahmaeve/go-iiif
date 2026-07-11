@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -241,6 +243,22 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("doctor is a standalone library mode", func(t *testing.T) {
+		o, err := parseArgs([]string{"-doctor", "-store", "/data/iiif"})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if !o.doctor || o.store != "/data/iiif" {
+			t.Fatalf("doctor options = %+v", o)
+		}
+		if _, err := parseArgs([]string{"-doctor", "-serve"}); err == nil {
+			t.Fatal("-doctor and -serve should be mutually exclusive")
+		}
+		if _, err := parseArgs([]string{"-doctor", "-manifest", "https://example.org/m"}); err == nil {
+			t.Fatal("-doctor and -manifest should be mutually exclusive")
+		}
+	})
+
 	t.Run("collection and manifest are mutually exclusive", func(t *testing.T) {
 		_, err := parseArgs([]string{
 			"-collection", "https://example.org/c/top",
@@ -286,6 +304,43 @@ func TestParseArgs(t *testing.T) {
 			t.Fatal("Date should be nil when -from/-to not given")
 		}
 	})
+}
+
+func TestRunDoctor(t *testing.T) {
+	root := t.TempDir()
+	bundle := filepath.Join(root, "example.org", "manuscript")
+	if err := os.MkdirAll(bundle, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"manifest.json":   `{"type":"Manifest"}`,
+		"provenance.json": `{"images":[{"file":"0001.jpg"}]}`,
+		"0001.jpg":        "jpeg",
+	} {
+		if err := os.WriteFile(filepath.Join(bundle, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-doctor", "-store", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("healthy doctor exit = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !contains(stdout.String(), "library is healthy") || !contains(stdout.String(), "1 bundle(s)") {
+		t.Fatalf("doctor output = %q", stdout.String())
+	}
+
+	if err := os.Remove(filepath.Join(bundle, "0001.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"-doctor", "-store", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("broken doctor exit = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !contains(stderr.String(), "ERROR") || !contains(stderr.String(), "0001.jpg") {
+		t.Fatalf("doctor error output = %q", stderr.String())
+	}
 }
 
 func TestFormatResult(t *testing.T) {

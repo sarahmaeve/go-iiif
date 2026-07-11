@@ -42,9 +42,10 @@ var fontsFS embed.FS
 // Reserved asset routes. The double-underscore prefix cannot collide with a
 // preserved-manifest dir slug (institution host + IIIF path).
 const (
-	miradorRoute     = "/__viewer__/mirador.min.js"
-	fontsRoutePrefix = "/__viewer__/fonts/"
-	catalogEditRoute = "/__catalog__/edit"
+	miradorRoute        = "/__viewer__/mirador.min.js"
+	fontsRoutePrefix    = "/__viewer__/fonts/"
+	catalogEditRoute    = "/__catalog__/edit"
+	catalogRefreshRoute = "/__catalog__/refresh"
 )
 
 // indexTmpl is the landing page: a researcher with no external viewer lands
@@ -76,8 +77,12 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
  letter-spacing:.01em;color:var(--primary);margin:0}
 .rule{border:0;border-top:1px solid var(--border);margin:24px 0 0}
 .rule.dbl{border-top:2px solid var(--primary);margin-top:16px}
+.catalogue-bar{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:32px 0 0}
 .count{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.75rem;font-weight:600;
- text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin:32px 0 0}
+ text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin:0}
+.refresh button{border:0;border-bottom:1px solid var(--border);padding:0;background:transparent;color:var(--muted);cursor:pointer;
+ font:600 .68rem "IBM Plex Mono",ui-monospace,monospace;text-transform:uppercase;letter-spacing:.1em}
+.refresh button:hover{color:var(--accent);border-color:var(--accent)}
 .entry{padding:24px 0;border-bottom:1px solid var(--border)}
 .entry .title{font-family:"Newsreader",Georgia,serif;font-weight:600;font-size:1.62rem;line-height:1.15;
  color:var(--primary);text-decoration:none;display:inline-block}
@@ -105,7 +110,8 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 <p class="kicker">Preserved Archive</p>
 <h1>Preserved IIIF Manifests</h1>
 <hr class="rule"><hr class="rule dbl">
-<p class="count">{{len .}} manuscript(s) · offline · deep-zoomable</p>
+<div class="catalogue-bar"><p class="count">{{len .}} manuscript(s) · offline · deep-zoomable</p>
+<form class="refresh" method="post" action="` + catalogRefreshRoute + `"><button type="submit">Refresh library</button></form></div>
 {{range .}}<article class="entry">
 <a class="title" href="/{{.Dir}}/">{{.Title}}</a>
 <p class="meta"><a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a><span class="sep">·</span>{{.Languages}}<span class="sep">·</span>{{.Pages}} pp<span class="sep">·</span>{{.Size}}</p>
@@ -356,6 +362,16 @@ func (s *Server) handleCatalogEdit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not save catalogue edit", http.StatusInternalServerError)
 		return
 	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) handleCatalogRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.catalog.refreshSources()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

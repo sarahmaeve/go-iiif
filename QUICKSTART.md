@@ -136,7 +136,21 @@ iiifpreserve: open https://127.0.0.1:8443/ in a browser for the embedded Mirador
 
 Open **https://127.0.0.1:8443/** — an index of every preserved manifest.
 Click one to open it in Mirador and zoom in to pixel level. All local; no
-network. Stop with Ctrl-C.
+network. Newly completed preservation bundles appear automatically while the
+server is running; “Refresh library” forces an immediate shallow refresh.
+Stop with Ctrl-C.
+
+To verify the complete local library—including every image and tile promised
+by its IIIF metadata—run the read-only doctor:
+
+```sh
+iiifpreserve -doctor
+# or: iiifpreserve -doctor -store /Volumes/archive/iiif
+```
+
+Warnings do not fail the check. Missing, empty, corrupt, or unsafe referenced
+files are reported as errors and produce a non-zero exit status; doctor never
+modifies the library.
 
 ## What you have
 

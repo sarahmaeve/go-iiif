@@ -39,6 +39,7 @@ type options struct {
 	store      string // -store: persistent library root (resolved in run())
 	preserve   string // deprecated alias for -store (back-compat)
 	dryRun     bool   // classify only, do not download images
+	doctor     bool   // validate the local library and exit
 	servePort  int    // -serve PORT; non-zero = serve the store on localhost, don't crawl
 	tlsCert    string
 	tlsKey     string
@@ -147,6 +148,7 @@ func parseArgs(args []string) (*options, error) {
 		store      = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
 		preserve   = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun     = fs.Bool("dry-run", false, "classify only; do not download images")
+		doctor     = fs.Bool("doctor", false, "validate manifests, provenance, images, tiles, annotations, and catalogue")
 		serve      servePortFlag
 		tlsCert    = fs.String("tls-cert", defaultTLSCert, "TLS certificate PEM (default: mkcert convention path)")
 		tlsKey     = fs.String("tls-key", defaultTLSKey, "TLS private key PEM (default: mkcert convention path)")
@@ -168,8 +170,11 @@ func parseArgs(args []string) (*options, error) {
 	if *collection != "" && *manifest != "" {
 		return nil, errors.New("-collection and -manifest are mutually exclusive")
 	}
-	if serve == 0 && *collection == "" && *manifest == "" {
-		return nil, errors.New("one of -collection, -manifest, or -serve is required")
+	if *doctor && (serve != 0 || *collection != "" || *manifest != "") {
+		return nil, errors.New("-doctor is mutually exclusive with -collection, -manifest, and -serve")
+	}
+	if serve == 0 && *collection == "" && *manifest == "" && !*doctor {
+		return nil, errors.New("one of -collection, -manifest, -serve, or -doctor is required")
 	}
 	o := &options{
 		collection: *collection,
@@ -185,6 +190,7 @@ func parseArgs(args []string) (*options, error) {
 		store:      *store,
 		preserve:   *preserve,
 		dryRun:     *dryRun,
+		doctor:     *doctor,
 		servePort:  int(serve),
 		tlsCert:    *tlsCert,
 		tlsKey:     *tlsKey,
@@ -254,6 +260,9 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	}
 	o.store = resolveStore(storeFlag, cfg, home)
 
+	if o.doctor {
+		return runDoctor(o, out, errOut)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -301,6 +310,28 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	errOut.line(runSummary(o.dryRun, n, matched, images))
 
 	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
+}
+
+func runDoctor(o *options, out, errOut *cliWriter) int {
+	report := serve.DiagnoseLibrary(o.store)
+	for _, p := range report.Problems {
+		line := fmt.Sprintf("%s %s: %s", p.Severity, p.Path, p.Message)
+		if p.Severity == "ERROR" {
+			errOut.line(line)
+		} else {
+			out.line(line)
+		}
+	}
+	out.printf("iiifpreserve: doctor checked %d bundle(s), %d image(s), %d tile pyramid(s), %d file(s)\n",
+		report.Bundles, report.Images, report.TilePyramids, report.FilesChecked)
+	if !report.Healthy() || out.err != nil || errOut.err != nil {
+		return 1
+	}
+	out.line("iiifpreserve: library is healthy")
+	if out.err != nil {
 		return 1
 	}
 	return 0

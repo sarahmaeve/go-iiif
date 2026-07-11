@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -18,6 +19,8 @@ const (
 	catalogFileName = "catalog.json"
 	catalogVersion  = 1
 )
+
+const catalogRefreshInterval = 5 * time.Second
 
 // persistedCatalog is the small, durable index beside the preserved bundles.
 // Bundles remain authoritative: source metadata is re-read at startup, while
@@ -42,24 +45,29 @@ type catalog struct {
 	root string
 	path string
 
-	mu      sync.RWMutex
-	entries map[string]manifestSummary
-	once    sync.Once
-	wg      sync.WaitGroup
-	loadErr error // protects an unreadable/corrupt sidecar from being overwritten
+	mu              sync.RWMutex
+	entries         map[string]manifestSummary
+	once            sync.Once
+	wg              sync.WaitGroup
+	loadErr         error // protects an unreadable/corrupt sidecar from being overwritten
+	refreshInterval time.Duration
 }
 
 func newCatalog(root string) *catalog {
 	c := &catalog{
-		root:    root,
-		path:    filepath.Join(root, catalogDirName, catalogFileName),
-		entries: make(map[string]manifestSummary),
+		root:            root,
+		path:            filepath.Join(root, catalogDirName, catalogFileName),
+		entries:         make(map[string]manifestSummary),
+		refreshInterval: catalogRefreshInterval,
 	}
 
 	saved, err := c.load()
 	c.loadErr = err
 	for _, ref := range discoverBundles(root) {
 		s := summaryFor(ref.absDir, ref.slug)
+		if strings.HasSuffix(s.sourceStamp, ":-") {
+			continue // provenance.json is Preserve's completion marker
+		}
 		if old, ok := saved[ref.slug]; ok {
 			s.CustomTitle = old.CustomTitle
 			s.Notes = old.Notes
@@ -102,17 +110,22 @@ type bundleRef struct {
 // present, descending further can discover nothing and is the source of the
 // former 30–40 second request latency.
 func discoverBundles(root string) []bundleRef {
+	out, _ := discoverBundlesChecked(root)
+	return out
+}
+
+func discoverBundlesChecked(root string) ([]bundleRef, error) {
 	var out []bundleRef
-	var walk func(string, string)
-	walk = func(absDir, rel string) {
+	var walk func(string, string) error
+	walk = func(absDir, rel string) error {
 		entries, err := os.ReadDir(absDir)
 		if err != nil {
-			return
+			return fmt.Errorf("catalog: reading %s: %w", absDir, err)
 		}
 		for _, entry := range entries {
 			if !entry.IsDir() && entry.Name() == "manifest.json" && rel != "" {
 				out = append(out, bundleRef{absDir: absDir, slug: filepath.ToSlash(rel)})
-				return
+				return nil
 			}
 		}
 		for _, entry := range entries {
@@ -123,12 +136,17 @@ func discoverBundles(root string) []bundleRef {
 			if rel != "" {
 				childRel = filepath.Join(rel, entry.Name())
 			}
-			walk(filepath.Join(absDir, entry.Name()), childRel)
+			if err := walk(filepath.Join(absDir, entry.Name()), childRel); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	walk(root, "")
+	if err := walk(root, ""); err != nil {
+		return nil, err
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].slug < out[j].slug })
-	return out
+	return out, nil
 }
 
 func (c *catalog) list() []manifestSummary {
@@ -147,6 +165,16 @@ func (c *catalog) get(dir string) (manifestSummary, bool) {
 	defer c.mu.RUnlock()
 	s, ok := c.entries[dir]
 	return s, ok
+}
+
+func (c *catalog) snapshot() map[string]manifestSummary {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]manifestSummary, len(c.entries))
+	for dir, entry := range c.entries {
+		out[dir] = entry
+	}
+	return out
 }
 
 func (c *catalog) update(dir, customTitle, notes string) error {
@@ -209,20 +237,78 @@ func (c *catalog) saveLocked() error {
 	return nil
 }
 
-// startSizeRefresh performs the one legacy-library migration in the
-// background. Requests immediately use the small in-memory catalogue; sizes
-// absent from the sidecar are filled without holding up the catalogue page.
-func (c *catalog) startSizeRefresh(ctx context.Context) {
+// startBackground performs legacy size migration and live shallow refresh.
+// Requests immediately use the small in-memory catalogue; neither task holds
+// up the catalogue page.
+func (c *catalog) startBackground(ctx context.Context) {
 	c.once.Do(func() {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			c.refreshSizes(ctx)
+			c.runBackground(ctx)
 		}()
 	})
 }
 
 func (c *catalog) wait() { c.wg.Wait() }
+
+// refreshSources performs a shallow reconciliation with the bundle tree.
+// Existing entries retain researcher-authored fields and cached sizes. A new
+// entry is admitted only after provenance.json exists: Preserve writes that
+// file last, so it is also the bundle's completion marker.
+func (c *catalog) refreshSources() (changes int) {
+	current := c.snapshot()
+	fresh := make(map[string]manifestSummary)
+	refs, err := discoverBundlesChecked(c.root)
+	if err != nil {
+		return 0 // a transient scan failure must never erase the live catalogue
+	}
+	for _, ref := range refs {
+		stamp := fileStamp(filepath.Join(ref.absDir, "manifest.json")) + ":" +
+			fileStamp(filepath.Join(ref.absDir, "provenance.json"))
+		old, existed := current[ref.slug]
+		switch {
+		case strings.HasSuffix(stamp, ":-") && existed:
+			fresh[ref.slug] = old // do not regress a completed entry mid-write
+		case strings.HasSuffix(stamp, ":-"):
+			continue // new bundle is not complete yet
+		case existed && old.sourceStamp == stamp:
+			fresh[ref.slug] = old // unchanged: avoid reparsing large manifest JSON
+		default:
+			fresh[ref.slug] = summaryFor(ref.absDir, ref.slug)
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	next := make(map[string]manifestSummary, len(fresh))
+	for dir, entry := range fresh {
+		old, existed := c.entries[dir]
+		if existed {
+			entry.CustomTitle = old.CustomTitle
+			entry.Notes = old.Notes
+			if old.sizeKnown && old.sourceStamp == entry.sourceStamp {
+				entry.sizeBytes = old.sizeBytes
+				entry.sizeKnown = true
+			}
+		}
+		entry.finishDisplayFields()
+		next[dir] = entry
+		if !existed || entry != old {
+			changes++
+		}
+	}
+	for dir := range c.entries {
+		if _, ok := next[dir]; !ok {
+			changes++
+		}
+	}
+	if changes > 0 {
+		c.entries = next
+		_ = c.saveLocked() // best effort; in-memory refresh remains useful
+	}
+	return changes
+}
 
 func (c *catalog) refreshSizes(ctx context.Context) {
 	for _, current := range c.list() {
@@ -250,6 +336,28 @@ func (c *catalog) refreshSizes(ctx context.Context) {
 	c.mu.Lock()
 	_ = c.saveLocked() // best effort: serving remains useful on a read-only library
 	c.mu.Unlock()
+}
+
+// runBackground finishes any legacy size migration, then notices completed,
+// changed, and removed bundles without requiring a server restart.
+func (c *catalog) runBackground(ctx context.Context) {
+	c.refreshSizes(ctx)
+	interval := c.refreshInterval
+	if interval <= 0 {
+		interval = catalogRefreshInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if c.refreshSources() > 0 {
+				c.refreshSizes(ctx)
+			}
+		}
+	}
 }
 
 func dirSize(ctx context.Context, dir string) (int64, error) {

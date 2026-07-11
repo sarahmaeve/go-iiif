@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDiscoverBundlesStopsAtManifestRoot(t *testing.T) {
@@ -100,6 +101,7 @@ func TestServerCatalogStateIsNotServedAsStaticFile(t *testing.T) {
 
 func TestCatalogSizeRefreshPersistsForNextStartup(t *testing.T) {
 	root := writeBundle(t)
+	writeTestProvenance(t, root)
 	c := newCatalog(root)
 	entry, ok := c.get("example.org_iiif_m")
 	if !ok || entry.sizeKnown {
@@ -116,6 +118,7 @@ func TestCatalogSizeRefreshPersistsForNextStartup(t *testing.T) {
 
 func TestCatalogDoesNotOverwriteCorruptResearchData(t *testing.T) {
 	root := writeBundle(t)
+	writeTestProvenance(t, root)
 	dir := filepath.Join(root, catalogDirName)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
@@ -136,5 +139,107 @@ func TestCatalogDoesNotOverwriteCorruptResearchData(t *testing.T) {
 	}
 	if string(got) != corrupt {
 		t.Fatalf("corrupt research data was overwritten: %q", got)
+	}
+}
+
+func writeTestProvenance(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "example.org_iiif_m")
+	if err := os.WriteFile(filepath.Join(dir, "provenance.json"), []byte(`{"manifest_url":"https://example.org/m","images":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCatalogRefreshWaitsForCompletedBundle(t *testing.T) {
+	root := writeNestedBundle(t)
+	c := newCatalog(root)
+	dir := filepath.Join(root, "new.example", "new-manuscript")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"label":"New manuscript"}`
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.refreshSources()
+	if _, ok := c.get("new.example/new-manuscript"); ok {
+		t.Fatal("in-progress bundle appeared before provenance completion marker")
+	}
+
+	prov := `{"manifest_url":"https://new.example/manifest","images":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "provenance.json"), []byte(prov), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if changes := c.refreshSources(); changes == 0 {
+		t.Fatal("completed bundle did not change catalogue")
+	}
+	if _, ok := c.get("new.example/new-manuscript"); !ok {
+		t.Fatal("completed bundle was not added")
+	}
+
+	if err := os.Rename(dir, dir+".removed"); err != nil {
+		t.Fatal(err)
+	}
+	c.refreshSources()
+	if _, ok := c.get("new.example/new-manuscript"); ok {
+		t.Fatal("removed bundle remained in catalogue")
+	}
+}
+
+func TestCatalogBackgroundRefreshFindsNewBundle(t *testing.T) {
+	root := writeNestedBundle(t)
+	c := newCatalog(root)
+	c.refreshInterval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(t.Context())
+	c.startBackground(ctx)
+	defer func() {
+		cancel()
+		c.wait()
+	}()
+
+	dir := filepath.Join(root, "live.example", "new-manuscript")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"label":"Live"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "provenance.json"), []byte(`{"manifest_url":"https://live.example/m","images":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := c.get("live.example/new-manuscript"); ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background refresh did not discover completed bundle")
+}
+
+func TestServerManualCatalogRefresh(t *testing.T) {
+	root := writeNestedBundle(t)
+	srv := New(root)
+	dir := filepath.Join(root, "manual.example", "new-manuscript")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"label":"Manually refreshed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "provenance.json"), []byte(`{"manifest_url":"https://manual.example/m","images":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, catalogRefreshRoute, nil))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST refresh = %d %q", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "manual.example/new-manuscript") || !strings.Contains(rec.Body.String(), "Refresh library") {
+		t.Fatalf("refreshed catalogue missing new entry/button; body=%s", rec.Body.String())
 	}
 }

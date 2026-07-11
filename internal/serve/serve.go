@@ -85,6 +85,10 @@ func (s *Server) Handler() http.Handler {
 			s.handleCatalogEdit(w, r)
 			return
 		}
+		if clean == catalogRefreshRoute {
+			s.handleCatalogRefresh(w, r)
+			return
+		}
 		// The persistent catalogue is application state, not a static asset.
 		if clean == "/"+catalogDirName || strings.HasPrefix(clean, "/"+catalogDirName+"/") {
 			http.NotFound(w, r)
@@ -387,7 +391,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr, certFile, keyFile str
 // Serve serves on ln until ctx is cancelled, then shuts down gracefully.
 // Returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener, certFile, keyFile string) error {
-	s.catalog.startSizeRefresh(ctx)
+	s.catalog.startBackground(ctx)
 	defer s.catalog.wait()
 	s.server = &http.Server{
 		Handler:           s.logRequests(s.Handler()),
