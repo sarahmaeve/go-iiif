@@ -35,6 +35,7 @@ type options struct {
 	max            int
 	workers        int
 	journal        string
+	fresh          bool   // discard collection-run checkpoints, never preserved content
 	store          string // -store: persistent library root (resolved in run())
 	preserve       string // deprecated alias for -store (back-compat)
 	dryRun         bool   // classify only, do not download images
@@ -146,6 +147,7 @@ func parseArgs(args []string) (*options, error) {
 		max            = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
 		workers        = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
 		journal        = fs.String("journal", "", "deprecated crawl journal to migrate into automatic query-scoped ingest state")
+		fresh          = fs.Bool("fresh", false, "start a fresh collection scan without deleting preserved content")
 		store          = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
 		preserve       = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun         = fs.Bool("dry-run", false, "classify only; do not download images")
@@ -183,6 +185,18 @@ func parseArgs(args []string) (*options, error) {
 	if *exportMetadata != "" && *dryRun {
 		return nil, errors.New("-dry-run is supported with -import-metadata, not -export-metadata")
 	}
+	if *fresh && *collection == "" {
+		return nil, errors.New("-fresh is supported only with -collection")
+	}
+	if *fresh && serve != 0 {
+		return nil, errors.New("-fresh collection scans cannot be combined with -serve")
+	}
+	if *fresh && *dryRun {
+		return nil, errors.New("-fresh and -dry-run are mutually exclusive; dry runs never use ingest state")
+	}
+	if *fresh && *journal != "" {
+		return nil, errors.New("-fresh cannot be combined with deprecated -journal migration")
+	}
 	if serve == 0 && *collection == "" && *manifest == "" && !*doctor && *exportMetadata == "" && *importMetadata == "" {
 		return nil, errors.New("one of -collection, -manifest, -serve, -doctor, -export-metadata, or -import-metadata is required")
 	}
@@ -197,6 +211,7 @@ func parseArgs(args []string) (*options, error) {
 		max:            *max,
 		workers:        *workers,
 		journal:        *journal,
+		fresh:          *fresh,
 		store:          *store,
 		preserve:       *preserve,
 		dryRun:         *dryRun,
@@ -297,7 +312,7 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
 
 	registry := institution.Builtin()
-	var src source.Source = source.NewCollectionSource(fetcher, o.collection)
+	var src source.Source
 	var completionJournal source.Journal
 	if !o.dryRun {
 		state, err := openIngestState(o.store, o, registry)
@@ -310,6 +325,9 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 				errOut.line("iiifpreserve: closing ingest state:", cerr)
 			}
 		}()
+		if o.fresh {
+			errOut.line("iiifpreserve: starting a fresh collection scan; preserved bundles are retained")
+		}
 		if o.journal != "" {
 			migrated, migrateErr := state.migrateLegacy(o.journal)
 			if migrateErr != nil {
@@ -318,12 +336,20 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 			}
 			errOut.printf("iiifpreserve: migrated %d completion(s) from deprecated -journal\n", migrated)
 		}
+		frontier, frontierErr := source.OpenCollectionFrontierSource(fetcher, o.collection, state.frontierPath)
+		if frontierErr != nil {
+			errOut.line("iiifpreserve:", frontierErr)
+			return 1
+		}
 		completionJournal = state.journal
-		src = source.NewResumableSource(src, completionJournal)
+		src = source.NewResumableSource(frontier, completionJournal)
 		errOut.printf("iiifpreserve: ingest run %s (%d manifest(s) already complete)\n",
 			state.descriptor.Fingerprint[:12], len(state.journal.Entries()))
-	} else if o.journal != "" {
-		errOut.line("iiifpreserve: WARNING -journal is ignored by -dry-run; dry runs never alter ingest state")
+	} else {
+		src = source.NewCollectionSource(fetcher, o.collection)
+		if o.journal != "" {
+			errOut.line("iiifpreserve: WARNING -journal is ignored by -dry-run; dry runs never alter ingest state")
+		}
 	}
 
 	p := pipeline.New(pipeline.Config{

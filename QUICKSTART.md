@@ -213,7 +213,10 @@ request-relative, so the library works no matter where it lives.
   filters, and institution mapping. Rerun the same command to continue.
   `-dry-run` never reads or changes completion state. The former `-journal
   <file>` option is deprecated and now only migrates that file into the
-  automatic state for the current query.
+  automatic state for the current query. Once a scan has completed, rerunning
+  makes no collection-discovery requests; use `-fresh` to scan the source from
+  its root again for newly added or changed manuscripts. This clears only the
+  query's ingest checkpoints, never preserved bundles or research metadata.
 
 - **Gallica/BnF** — works, but BnF is rate-limited (13 s/host by design),
   so a manuscript takes a while. It's resumable and shows per-page

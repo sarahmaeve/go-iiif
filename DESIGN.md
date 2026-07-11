@@ -117,8 +117,13 @@ concurrency cap, exponential backoff on
 language/date/place filters, filter semantics version, and the canonical
 institution field mappings, plus a preservation-semantics version. Durable preserves and no-match decisions are
 recorded; failures and dry runs are not. Reopening repairs an interrupted
-journal tail. Conditional-GET and content-dedup primitives exist, but durable
-CLI wiring remains planned (§7 / `planning/SOURCE_INGESTION.md`).
+journal tail. Collection discovery itself uses an atomic frontier containing
+pending/visited collection URLs and discovered manifests; each fetched
+collection is committed before its manifests are yielded, so restart repeats
+at most the current collection request. A completed frontier makes no remote
+discovery requests until explicit `-fresh`, which resets only ingest state.
+Conditional-GET and content-dedup primitives exist, but durable CLI wiring
+remains planned (§7 / `planning/SOURCE_INGESTION.md`).
 **Bot-wall stance:** present an honest identifying User-Agent (a one-time
 public-domain preservation fetch is not abusive) rather than spoofing a
 browser — bot-walls like Anubis (which Bodleian uses) add suspicion weight
@@ -268,7 +273,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
 | HTTPS `Fetcher` (HTTPS-only enforced, std TLS verify; **honest identifying UA** by default with per-host browser-spoof override only where forced e.g. Gallica; honest `Accept`; status mapping; **rejects HTML interstitials** so a bot-wall/error page is never archived) | ✅ done | `internal/source` |
-| Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff, plus automatic query-aware completion ledger (durable/no-match outcomes only; dry-run isolated; crash-tail repair; deprecated `-journal` migration). Conditional-GET and content-dedup primitives exist but are not yet wired durably into CLI runs | ✅ core / ◐ cache pending | `internal/source`, `cmd/iiifpreserve` |
+| Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff; automatic query-aware completion ledger (durable/no-match outcomes only; dry-run isolated; crash-tail repair; deprecated `-journal` migration); atomic pending/visited/discovered collection frontier committed before yield; completed reruns make zero discovery requests; `-fresh` safely starts a new scan without deleting preserved/research data. Conditional-GET and content-dedup primitives exist but are not yet wired durably into CLI runs | ✅ resume / ◐ cache pending | `internal/source`, `cmd/iiifpreserve` |
 | End-to-end classification pipeline | ✅ done | `internal/pipeline` |
 | Concurrent pipeline fan-out (opt-in `Workers`; per-host politeness preserved; live multi-host verified) | ✅ done | `internal/pipeline` |
 | CLI entrypoint | ✅ done (provisional name) | `cmd/iiifpreserve` |

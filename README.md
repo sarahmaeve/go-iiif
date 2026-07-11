@@ -34,6 +34,9 @@ no external tools and the copy survives network outages.
   trees; a cross-process lock prevents concurrent server/import writes.
 - In-memory caching of localized manifests, invalidated by manifest or
   provenance changes.
+- Crash-safe collection ingestion with query-isolated completion ledgers and
+  an atomic discovery frontier; reruns resume at the pending collection and
+  reuse committed page images without HTTP.
 
 ## Getting started
 

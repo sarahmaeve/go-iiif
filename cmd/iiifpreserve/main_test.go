@@ -163,6 +163,22 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("fresh requires a real collection run", func(t *testing.T) {
+		if _, err := parseArgs([]string{"-manifest", "https://example.org/m", "-fresh"}); err == nil {
+			t.Fatal("-fresh with -manifest should fail")
+		}
+		if _, err := parseArgs([]string{"-collection", "https://example.org/c", "-fresh", "-dry-run"}); err == nil {
+			t.Fatal("-fresh with -dry-run should fail")
+		}
+		if _, err := parseArgs([]string{"-collection", "https://example.org/c", "-fresh", "-serve"}); err == nil {
+			t.Fatal("-fresh collection scan with -serve should fail")
+		}
+		o, err := parseArgs([]string{"-collection", "https://example.org/c", "-fresh"})
+		if err != nil || !o.fresh {
+			t.Fatalf("real fresh collection parse = %+v, %v", o, err)
+		}
+	})
+
 	t.Run("-serve=PORT picks an explicit port", func(t *testing.T) {
 		o, err := parseArgs([]string{"-serve=9000"})
 		if err != nil {

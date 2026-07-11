@@ -1,6 +1,6 @@
 # Resumable source ingestion
 
-Status: Slices 1–2 implemented; Slices 3–5 proposed
+Status: Slices 1–3 implemented; Slices 4–5 proposed
 
 ## Goal
 
@@ -51,7 +51,21 @@ Slice 2 is implemented:
 - an unterminated final journal record left by a kill is discarded on reopen,
   preventing false completion or a poisoned subsequent append.
 
-Slices 3–5 remain future ingestion work.
+Slice 3 is implemented:
+
+- real collection runs persist pending and visited collection URLs plus
+  discovered manifest URLs in an atomic query-scoped frontier;
+- each fetched collection document is committed before newly discovered
+  manifests are yielded;
+- interruption after that commit resumes from the first pending collection,
+  while fetch/decode/save failure leaves the current collection pending;
+- cycles and duplicate manifest URLs are suppressed durably;
+- a completed query rerun yields local discovery state through the completion
+  ledger and performs no collection HTTP requests; and
+- explicit `-fresh` clears the query's frontier and completion journal while
+  retaining preserved bundles, annotations, and catalogue research metadata.
+
+Slices 4–5 remain future ingestion work.
 
 ## Baseline before Slice 1
 
@@ -85,7 +99,7 @@ in—normal command-line runs.
    marker, so a partial manuscript can appear complete.
 3. **Fixed in Slice 2 — no automatic crawl completion ledger.** The optional journal was not
    marked by the CLI and requires a manually selected path.
-4. **Collection discovery restarts at the root.** A restart walks collection
+4. **Fixed in Slice 3 — collection discovery restarts at the root.** A restart walked collection
    documents again before it reaches unfinished manifests.
 5. **Manifest requests repeat.** A single-manifest restart re-fetches the
    manifest before it can discover that all page images exist. This is small
@@ -100,10 +114,10 @@ in—normal command-line runs.
 
 ## Proposed behavior
 
-Resume should be automatic under the selected `-store`; researchers should
-not need to invent a journal path. A normal rerun resumes. An explicit future
-`-fresh` option may discard a discovery run's checkpoint, but it must not
-delete preserved manuscripts or researcher metadata.
+Resume is automatic under the selected `-store`; researchers do not need to
+invent a journal path. A normal rerun resumes. Explicit `-fresh` discards the
+query's discovery and completion checkpoints but never deletes preserved
+manuscripts or researcher metadata.
 
 The console should distinguish the stages:
 

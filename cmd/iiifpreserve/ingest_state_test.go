@@ -134,6 +134,45 @@ func TestIngestStateMigratesLegacyJournal(t *testing.T) {
 	}
 }
 
+func TestOpenIngestStateFreshClearsCheckpointsOnly(t *testing.T) {
+	root := t.TempDir()
+	o := &options{collection: "https://example.org/collection"}
+	state, err := openIngestState(root, o, institution.Builtin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.journal.MarkDone("https://example.org/manifest/1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(state.frontierPath, []byte(`{"old":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journalPath, frontierPath := state.journalPath, state.frontierPath
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	freshOptions := *o
+	freshOptions.fresh = true
+	fresh, err := openIngestState(root, &freshOptions, institution.Builtin())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	if got := fresh.journal.Entries(); len(got) != 0 {
+		t.Fatalf("fresh journal retained %v", got)
+	}
+	if _, err := os.Stat(frontierPath); !os.IsNotExist(err) {
+		t.Fatalf("fresh scan retained frontier %s: %v", frontierPath, err)
+	}
+	if _, err := os.Stat(journalPath); err != nil {
+		t.Fatalf("fresh scan did not recreate empty journal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".iiifpreserve", "ingest", fresh.descriptor.Fingerprint+".json")); err != nil {
+		t.Fatalf("fresh scan removed query descriptor: %v", err)
+	}
+}
+
 func TestCrawlMarksOnlyDurableRealRunOutcomes(t *testing.T) {
 	const noMatchURL = "https://example.org/no-match"
 	const matchURL = "https://example.org/match"
