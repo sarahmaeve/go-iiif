@@ -21,11 +21,14 @@ no external tools and the copy survives network outages.
   layer; not yet dogfooded as a whole-library run.
 - Deep zoom from local static tiles.
 - Offline W3C Web Annotation authoring, stored beside the bundle.
-- A persistent local catalogue with editable display titles and research notes;
+- A persistent, searchable/sortable local catalogue with editable display
+  titles, research notes, and tags;
   catalogue requests never rescan image or tile files, and newly completed
   bundles appear while the server is running.
 - A read-only `-doctor` mode that validates manifests, provenance, local
   images, advertised deep-zoom tiles, annotations, and the catalogue index.
+- Per-manuscript serialization for annotation edits, with loopback Host and
+  browser-Origin checks on every local mutation endpoint.
 
 ## Getting started
 

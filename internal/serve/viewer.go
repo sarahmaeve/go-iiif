@@ -83,6 +83,11 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 .refresh button{border:0;border-bottom:1px solid var(--border);padding:0;background:transparent;color:var(--muted);cursor:pointer;
  font:600 .68rem "IBM Plex Mono",ui-monospace,monospace;text-transform:uppercase;letter-spacing:.1em}
 .refresh button:hover{color:var(--accent);border-color:var(--accent)}
+.catalogue-tools{display:grid;grid-template-columns:minmax(0,1fr) 12rem;gap:12px;margin:18px 0 4px}
+.catalogue-tools label{display:grid;gap:4px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.62rem;
+ font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.catalogue-tools input,.catalogue-tools select{width:100%;border:1px solid var(--border);background:var(--surface);color:var(--text);
+ padding:8px 10px;font:400 .9rem "Source Serif 4",Georgia,serif;text-transform:none;letter-spacing:normal}
 .entry{padding:24px 0;border-bottom:1px solid var(--border)}
 .entry .title{font-family:"Newsreader",Georgia,serif;font-weight:600;font-size:1.62rem;line-height:1.15;
  color:var(--primary);text-decoration:none;display:inline-block}
@@ -93,6 +98,8 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 .meta a:hover{color:var(--accent)}
 .meta .sep{padding:0 8px;color:var(--border)}
 .notes{margin:12px 0 0;padding-left:14px;border-left:2px solid var(--border);white-space:pre-wrap;color:#403a35}
+.tags{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;
+ color:var(--accent);margin:10px 0 0}
 .edit{margin-top:12px;font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:.72rem;color:var(--muted)}
 .edit summary{cursor:pointer;display:inline-block;border-bottom:1px solid var(--border)}
 .edit form{display:grid;gap:10px;margin-top:12px;padding:14px;background:var(--surface);border:1px solid var(--border)}
@@ -104,6 +111,7 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
  font:600 .7rem "IBM Plex Mono",ui-monospace,monospace;text-transform:uppercase;letter-spacing:.1em}
 .edit button:hover{background:var(--accent)}
 .empty{font-style:italic;color:var(--muted);margin-top:32px}
+@media(max-width:36rem){.catalogue-tools{grid-template-columns:1fr}.catalogue-bar{align-items:flex-start;flex-direction:column}}
 </style>
 <body>
 <main class="page">
@@ -112,20 +120,59 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 <hr class="rule"><hr class="rule dbl">
 <div class="catalogue-bar"><p class="count">{{len .}} manuscript(s) · offline · deep-zoomable</p>
 <form class="refresh" method="post" action="` + catalogRefreshRoute + `"><button type="submit">Refresh library</button></form></div>
-{{range .}}<article class="entry">
+<div class="catalogue-tools">
+<label>Search library<input id="catalog-search" type="search" placeholder="Title, institution, language, notes, or tags"></label>
+<label>Sort by<select id="catalog-sort"><option value="archive">Archive path</option><option value="title">Title</option><option value="institution">Institution</option><option value="pages">Page count</option></select></label>
+</div>
+<section id="catalog-entries">
+{{range .}}<article class="entry" data-dir="{{.Dir}}" data-title="{{.Title}}" data-institution="{{.Institution}}" data-pages="{{.Pages}}" data-search="{{.SourceTitle}} {{.Title}} {{.Institution}} {{.Languages}} {{.Notes}} {{.Tags}}">
 <a class="title" href="/{{.Dir}}/">{{.Title}}</a>
 <p class="meta"><a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a><span class="sep">·</span>{{.Languages}}<span class="sep">·</span>{{.Pages}} pp<span class="sep">·</span>{{.Size}}</p>
 {{if .Notes}}<p class="notes">{{.Notes}}</p>{{end}}
+{{if .Tags}}<p class="tags">Tags · {{.Tags}}</p>{{end}}
 <details class="edit"><summary>Edit title or notes</summary>
 <form method="post" action="` + catalogEditRoute + `">
 <input type="hidden" name="dir" value="{{.Dir}}">
 <label>Display title<input name="title" maxlength="500" value="{{.CustomTitle}}" placeholder="{{.SourceTitle}}"></label>
 <label>Catalogue notes<textarea name="notes" maxlength="20000">{{.Notes}}</textarea></label>
+<label>Tags<input name="tags" maxlength="1000" value="{{.Tags}}" placeholder="Old French, John Dee, reviewed"></label>
 <button type="submit">Save catalogue entry</button>
 </form></details>
 </article>
 {{else}}<p class="empty">No preserved manifests yet.</p>
-{{end}}</main>
+{{end}}</section>
+<p class="empty" id="catalog-no-results" hidden>No manuscripts match this search.</p>
+</main>
+<script>
+(() => {
+  const search = document.getElementById('catalog-search');
+  const sort = document.getElementById('catalog-sort');
+  const box = document.getElementById('catalog-entries');
+  const empty = document.getElementById('catalog-no-results');
+  const count = document.querySelector('.count');
+  const entries = Array.from(box.querySelectorAll('article.entry'));
+  const text = (entry, key) => (entry.dataset[key] || '').toLocaleLowerCase();
+  function apply() {
+    const query = search.value.trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const entry of entries) {
+      entry.hidden = query !== '' && !entry.dataset.search.toLocaleLowerCase().includes(query);
+      if (!entry.hidden) visible++;
+    }
+    const mode = sort.value;
+    entries.sort((a, b) => {
+      if (mode === 'pages') return Number(b.dataset.pages) - Number(a.dataset.pages) || text(a, 'title').localeCompare(text(b, 'title'));
+      if (mode === 'title' || mode === 'institution') return text(a, mode).localeCompare(text(b, mode));
+      return text(a, 'dir').localeCompare(text(b, 'dir'));
+    });
+    for (const entry of entries) box.appendChild(entry);
+    empty.hidden = visible !== 0 || entries.length === 0;
+    count.textContent = visible + ' manuscript(s) · offline · deep-zoomable';
+  }
+  search.addEventListener('input', apply);
+  sort.addEventListener('change', apply);
+})();
+</script>
 </body>
 </html>
 `))
@@ -227,6 +274,7 @@ type manifestSummary struct {
 	SourceTitle string
 	CustomTitle string
 	Notes       string
+	Tags        string
 	Languages   string
 	Institution string // host of the original IIIF record
 	RecordURL   string // original manifest URL (the IIIF record)
@@ -342,6 +390,9 @@ func (s *Server) handleCatalogEdit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.allowMutation(w, r) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid catalogue edit", http.StatusBadRequest)
@@ -350,11 +401,12 @@ func (s *Server) handleCatalogEdit(w http.ResponseWriter, r *http.Request) {
 	dir := r.FormValue("dir")
 	title := r.FormValue("title")
 	notes := r.FormValue("notes")
-	if len(title) > 500 || len(notes) > 20000 {
+	tags := r.FormValue("tags")
+	if len(title) > 500 || len(notes) > 20000 || len(tags) > 1000 {
 		http.Error(w, "catalogue edit is too large", http.StatusBadRequest)
 		return
 	}
-	if err := s.catalog.update(dir, title, notes); err != nil {
+	if err := s.catalog.update(dir, title, notes, tags); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			http.NotFound(w, r)
 			return
@@ -369,6 +421,9 @@ func (s *Server) handleCatalogRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowMutation(w, r) {
 		return
 	}
 	s.catalog.refreshSources()

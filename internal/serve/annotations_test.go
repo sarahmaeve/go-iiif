@@ -2,14 +2,70 @@ package serve
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestServer_ConcurrentAnnotationCreatesAreSerialized(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "inst", "ms")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const canvas = "https://inst.example/canvas/1"
+	for name, body := range map[string]string{
+		"manifest.json":   `{"type":"Manifest"}`,
+		"provenance.json": `{"manifest_url":"https://inst.example/m","images":[]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := New(root)
+	const creates = 64
+	var wg sync.WaitGroup
+	errs := make(chan string, creates)
+	for i := range creates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := fmt.Sprintf(`{"type":"Annotation","body":{"type":"TextualBody","value":"note %d"},"target":"%s"}`, i, canvas)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/inst/ms/annotations", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusCreated {
+				errs <- fmt.Sprintf("create %d = %d %q", i, rec.Code, rec.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "annotations.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(b, &page); err != nil {
+		t.Fatalf("stored annotation page is corrupt: %v", err)
+	}
+	if len(page.Items) != creates {
+		t.Fatalf("concurrent creates stored %d annotations, want %d", len(page.Items), creates)
+	}
+}
 
 // The embedded viewer is Mirador + MAE; MAE's storage adapter loads
 // annotations from /<dir>/annotations and dispatches them for display

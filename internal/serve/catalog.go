@@ -37,6 +37,7 @@ type persistedEntry struct {
 	SizeKnown   bool   `json:"size_known,omitempty"`
 	CustomTitle string `json:"custom_title,omitempty"`
 	Notes       string `json:"notes,omitempty"`
+	Tags        string `json:"tags,omitempty"`
 }
 
 // catalog is an in-memory request-time index with a persistent sidecar. It
@@ -71,6 +72,7 @@ func newCatalog(root string) *catalog {
 		if old, ok := saved[ref.slug]; ok {
 			s.CustomTitle = old.CustomTitle
 			s.Notes = old.Notes
+			s.Tags = old.Tags
 			if old.SizeKnown && old.SourceStamp == s.sourceStamp {
 				s.sizeBytes = old.SizeBytes
 				s.sizeKnown = true
@@ -177,7 +179,7 @@ func (c *catalog) snapshot() map[string]manifestSummary {
 	return out
 }
 
-func (c *catalog) update(dir, customTitle, notes string) error {
+func (c *catalog) update(dir, customTitle, notes, tags string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -188,6 +190,7 @@ func (c *catalog) update(dir, customTitle, notes string) error {
 	before := entry
 	entry.CustomTitle = strings.TrimSpace(customTitle)
 	entry.Notes = strings.TrimSpace(notes)
+	entry.Tags = normalizeCatalogTags(tags)
 	entry.finishDisplayFields()
 	c.entries[dir] = entry
 	if err := c.saveLocked(); err != nil {
@@ -209,6 +212,7 @@ func (c *catalog) saveLocked() error {
 			SizeKnown:   entry.sizeKnown,
 			CustomTitle: entry.CustomTitle,
 			Notes:       entry.Notes,
+			Tags:        entry.Tags,
 		}
 	}
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -287,6 +291,7 @@ func (c *catalog) refreshSources() (changes int) {
 		if existed {
 			entry.CustomTitle = old.CustomTitle
 			entry.Notes = old.Notes
+			entry.Tags = old.Tags
 			if old.sizeKnown && old.sourceStamp == entry.sourceStamp {
 				entry.sizeBytes = old.sizeBytes
 				entry.sizeKnown = true
@@ -308,6 +313,21 @@ func (c *catalog) refreshSources() (changes int) {
 		_ = c.saveLocked() // best effort; in-memory refresh remains useful
 	}
 	return changes
+}
+
+func normalizeCatalogTags(raw string) string {
+	seen := make(map[string]bool)
+	var tags []string
+	for _, part := range strings.Split(raw, ",") {
+		tag := strings.TrimSpace(part)
+		key := strings.ToLower(tag)
+		if tag == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		tags = append(tags, tag)
+	}
+	return strings.Join(tags, ", ")
 }
 
 func (c *catalog) refreshSizes(ctx context.Context) {

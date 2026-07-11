@@ -134,6 +134,11 @@ func TestServer_IndexShowsRichInfo(t *testing.T) {
 	if !strings.Contains(body, "1") || !strings.Contains(body, "size calculating…") {
 		t.Fatalf("index missing page count / asynchronous size status; body=%s", body)
 	}
+	for _, want := range []string{`id="catalog-search"`, `id="catalog-sort"`, `data-pages=`, "Search library", "Page count"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("index missing catalogue search/sort control %q; body=%s", want, body)
+		}
+	}
 }
 
 // TestServer_NestedInstitutionLayout: with <host>/<slug>/ nesting the index

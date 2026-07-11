@@ -4,7 +4,8 @@
 // canvas via `adapter(canvasId)`; every mutating method returns the full
 // W3C AnnotationPage, exactly like MAE's reference LocalStorageAdapter
 // (verified against the vendored MAE dist). Loopback-only, single-user —
-// same trust model as the rest of serving, so no auth.
+// same trust model as the rest of serving; the Go server additionally rejects
+// foreign browser origins and non-loopback Host headers on mutations.
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 export default class HttpAnnotationAdapter {

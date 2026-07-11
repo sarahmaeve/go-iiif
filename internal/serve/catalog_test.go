@@ -56,6 +56,7 @@ func TestServerCatalogEditPersistsTitleAndNotes(t *testing.T) {
 		"dir":   {dir},
 		"title": {"The English Catalogue Title"},
 		"notes": {"From John Dee's library.\nFormer shelfmark <Dee>."},
+		"tags":  {"Old French, John Dee, old french"},
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, catalogEditRoute, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -73,7 +74,7 @@ func TestServerCatalogEditPersistsTitleAndNotes(t *testing.T) {
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 	body := rec.Body.String()
-	for _, want := range []string{"The English Catalogue Title", "From John Dee&#39;s library.", "Former shelfmark &lt;Dee&gt;."} {
+	for _, want := range []string{"The English Catalogue Title", "From John Dee&#39;s library.", "Former shelfmark &lt;Dee&gt;.", "Tags · Old French, John Dee"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("catalogue missing persisted/escaped field %q; body=%s", want, body)
 		}
@@ -88,7 +89,7 @@ func TestServerCatalogEditPersistsTitleAndNotes(t *testing.T) {
 
 func TestServerCatalogStateIsNotServedAsStaticFile(t *testing.T) {
 	root := writeNestedBundle(t)
-	if err := New(root).catalog.update("iiif.bodleian.ox.ac.uk/iiif_manifest_a.json", "title", "note"); err != nil {
+	if err := New(root).catalog.update("iiif.bodleian.ox.ac.uk/iiif_manifest_a.json", "title", "note", "tag"); err != nil {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
@@ -130,7 +131,7 @@ func TestCatalogDoesNotOverwriteCorruptResearchData(t *testing.T) {
 	}
 
 	c := newCatalog(root)
-	if err := c.update("example.org_iiif_m", "replacement", "replacement"); err == nil {
+	if err := c.update("example.org_iiif_m", "replacement", "replacement", "replacement"); err == nil {
 		t.Fatal("editing through a corrupt catalogue unexpectedly succeeded")
 	}
 	got, err := os.ReadFile(path)

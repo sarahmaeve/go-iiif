@@ -27,9 +27,11 @@ import (
 // Server serves a preserved-bundle directory tree as static files, bound to
 // localhost.
 type Server struct {
-	root    string
-	server  *http.Server
-	catalog *catalog
+	root                  string
+	server                *http.Server
+	catalog               *catalog
+	annotationLocks       keyedMutexes
+	enforceLocalMutations bool
 	// logf, when set, receives one line per HTTP request as
 	// "METHOD STATUS PATH" (printf-style). Used to diagnose what a viewer
 	// actually requests against the rewritten manifest / tile pyramid.
@@ -217,11 +219,12 @@ func (s *Server) readAnnotation(w http.ResponseWriter, r *http.Request) (annotat
 
 // handleAnnotations is the per-bundle annotation REST surface backing the
 // offline store (and the Mirador storage adapter): GET list / POST create /
-// PUT update / DELETE. Loopback-only, single-user, so no auth — the same
-// trust model as the rest of serving. Mutations are displayed via the
-// existing serve-time injection (the viewer re-fetches the manifest to see
-// them).
+// PUT update / DELETE. Mutations are loopback/origin-guarded and serialized
+// per bundle so overlapping MAE requests cannot lose one another's writes.
 func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean string) {
+	if r.Method != http.MethodGet && !s.allowMutation(w, r) {
+		return
+	}
 	dir, ok := s.hasManifest(strings.TrimSuffix(clean, "/annotations"))
 	if !ok {
 		http.NotFound(w, r) // only a real preserved bundle is annotatable
@@ -285,7 +288,10 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 		if a.ID == "" {
 			a.ID = newAnnotationID()
 		}
-		if err := annotation.Add(annDir, a); err != nil {
+		unlock := s.annotationLocks.lock(annDir)
+		err := annotation.Add(annDir, a)
+		unlock()
+		if err != nil {
 			http.Error(w, "could not save annotation", http.StatusInternalServerError)
 			return
 		}
@@ -300,7 +306,10 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 			http.Error(w, "update needs the annotation id", http.StatusBadRequest)
 			return
 		}
-		switch err := annotation.Update(annDir, a); {
+		unlock := s.annotationLocks.lock(annDir)
+		err := annotation.Update(annDir, a)
+		unlock()
+		switch {
 		case errors.Is(err, annotation.ErrNotFound):
 			http.NotFound(w, r)
 		case err != nil:
@@ -315,7 +324,10 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 			http.Error(w, "delete needs ?id=", http.StatusBadRequest)
 			return
 		}
-		switch err := annotation.Delete(annDir, id); {
+		unlock := s.annotationLocks.lock(annDir)
+		err := annotation.Delete(annDir, id)
+		unlock()
+		switch {
 		case errors.Is(err, annotation.ErrNotFound):
 			http.NotFound(w, r)
 		case err != nil:
@@ -393,6 +405,7 @@ func (s *Server) ListenAndServe(ctx context.Context, addr, certFile, keyFile str
 func (s *Server) Serve(ctx context.Context, ln net.Listener, certFile, keyFile string) error {
 	s.catalog.startBackground(ctx)
 	defer s.catalog.wait()
+	s.enforceLocalMutations = true
 	s.server = &http.Server{
 		Handler:           s.logRequests(s.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,

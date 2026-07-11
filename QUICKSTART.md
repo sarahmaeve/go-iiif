@@ -140,6 +140,12 @@ network. Newly completed preservation bundles appear automatically while the
 server is running; “Refresh library” forces an immediate shallow refresh.
 Stop with Ctrl-C.
 
+The catalogue can be searched across titles, institutions, languages, notes,
+and tags, and sorted by archive path, title, institution, or page count. Open
+“Edit title or notes” on any entry to supply an English display title, research
+notes, or comma-separated tags; these fields persist across server restarts
+and library refreshes.
+
 To verify the complete local library—including every image and tile promised
 by its IIIF metadata—run the read-only doctor:
 
