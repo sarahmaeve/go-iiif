@@ -158,6 +158,27 @@ Warnings do not fail the check. Missing, empty, corrupt, or unsafe referenced
 files are reported as errors and produce a non-zero exit status; doctor never
 modifies the library.
 
+## Exchange research metadata
+
+Catalogue titles, notes, tags, and annotations are small and can be exchanged
+without copying the image/tile library:
+
+```sh
+# Researcher A
+iiifpreserve -export-metadata my-research.json
+
+# Researcher B, after preserving the same manuscript(s)
+iiifpreserve -import-metadata my-research.json
+```
+
+Import matches bundles by original manifest URL, so local directory layouts
+may differ. It is deliberately non-destructive: blank local titles/notes are
+filled, tags are unioned, new annotation IDs are added, exact duplicates are
+ignored, and conflicting local values are kept with a warning. Bundles absent
+from the recipient's library are skipped. The running server notices imported
+catalogue fields on its next shallow refresh; annotations are read directly
+from disk.
+
 ## What you have
 
 Under `~/iiif-images/<host>/<slug>/`:
@@ -167,6 +188,8 @@ Under `~/iiif-images/<host>/<slug>/`:
 - `NNNN.jpg` — each page at full size
 - `NNNN/` — its IIIF level-0 tile pyramid + `info.json` (deep zoom)
 - `provenance.json` — source URLs, recorded license, tile records
+- `.iiifpreserve/catalog.json` at the library root — catalogue overrides,
+  notes, tags, and cached sizes
 
 It's durable, offline, and re-servable from anywhere — the rewrite is
 request-relative, so the library works no matter where it lives.

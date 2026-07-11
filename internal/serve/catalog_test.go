@@ -244,3 +244,18 @@ func TestServerManualCatalogRefresh(t *testing.T) {
 		t.Fatalf("refreshed catalogue missing new entry/button; body=%s", rec.Body.String())
 	}
 }
+
+func TestCatalogRefreshLoadsExternalMetadataImport(t *testing.T) {
+	root := writeNestedBundle(t)
+	serving := newCatalog(root)
+	externalImport := newCatalog(root)
+	const dir = "iiif.bodleian.ox.ac.uk/iiif_manifest_a.json"
+	if err := externalImport.update(dir, "Externally imported title", "Imported note", "exchange"); err != nil {
+		t.Fatal(err)
+	}
+	serving.refreshSources()
+	entry, ok := serving.get(dir)
+	if !ok || entry.CustomTitle != "Externally imported title" || entry.Notes != "Imported note" || entry.Tags != "exchange" {
+		t.Fatalf("live catalogue did not reload external import: (%#v, %v)", entry, ok)
+	}
+}

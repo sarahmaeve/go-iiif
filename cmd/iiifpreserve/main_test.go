@@ -259,6 +259,23 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("metadata exchange modes are standalone", func(t *testing.T) {
+		export, err := parseArgs([]string{"-export-metadata", "/tmp/research.json", "-store", "/data/iiif"})
+		if err != nil || export.exportMetadata != "/tmp/research.json" {
+			t.Fatalf("export parse = %+v, %v", export, err)
+		}
+		incoming, err := parseArgs([]string{"-import-metadata", "/tmp/research.json"})
+		if err != nil || incoming.importMetadata != "/tmp/research.json" {
+			t.Fatalf("import parse = %+v, %v", incoming, err)
+		}
+		if _, err := parseArgs([]string{"-export-metadata", "a", "-import-metadata", "b"}); err == nil {
+			t.Fatal("simultaneous export/import should be rejected")
+		}
+		if _, err := parseArgs([]string{"-import-metadata", "a", "-serve"}); err == nil {
+			t.Fatal("import and serve should be rejected")
+		}
+	})
+
 	t.Run("collection and manifest are mutually exclusive", func(t *testing.T) {
 		_, err := parseArgs([]string{
 			"-collection", "https://example.org/c/top",
@@ -340,6 +357,64 @@ func TestRunDoctor(t *testing.T) {
 	}
 	if !contains(stderr.String(), "ERROR") || !contains(stderr.String(), "0001.jpg") {
 		t.Fatalf("doctor error output = %q", stderr.String())
+	}
+}
+
+func TestRunMetadataExportImport(t *testing.T) {
+	writeBundle := func(root, rel string) string {
+		t.Helper()
+		dir := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string]string{
+			"manifest.json":   `{"type":"Manifest","label":{"en":["Exchange"]}}`,
+			"provenance.json": `{"manifest_url":"https://example.org/shared","images":[]}`,
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+
+	source := t.TempDir()
+	sourceRel := "source/shared"
+	sourceDir := writeBundle(source, sourceRel)
+	stateDir := filepath.Join(source, ".iiifpreserve")
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	catalog := `{"version":1,"entries":{"` + sourceRel + `":{"custom_title":"Shared title","notes":"Shared note","tags":"exchange"}}}`
+	if err := os.WriteFile(filepath.Join(stateDir, "catalog.json"), []byte(catalog), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	annotations := `{"type":"AnnotationPage","items":[{"id":"urn:shared:1","type":"Annotation","target":"https://example.org/canvas/1"}]}`
+	if err := os.WriteFile(filepath.Join(sourceDir, "annotations.json"), []byte(annotations), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(t.TempDir(), "research.json")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-export-metadata", archive, "-store", source}, &stdout, &stderr); code != 0 {
+		t.Fatalf("export exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+
+	target := t.TempDir()
+	targetDir := writeBundle(target, "target/shared")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"-import-metadata", archive, "-store", target}, &stdout, &stderr); code != 0 {
+		t.Fatalf("import exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, path := range []string{filepath.Join(target, ".iiifpreserve", "catalog.json"), filepath.Join(targetDir, "annotations.json")} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("import did not create %s: %v", path, err)
+		}
+		if !strings.Contains(string(b), "Shared") && !strings.Contains(string(b), "urn:shared:1") {
+			t.Fatalf("imported file lacks research metadata: %s", b)
+		}
 	}
 }
 

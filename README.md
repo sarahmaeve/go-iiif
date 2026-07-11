@@ -29,6 +29,10 @@ no external tools and the copy survives network outages.
   images, advertised deep-zoom tiles, annotations, and the catalogue index.
 - Per-manuscript serialization for annotation edits, with loopback Host and
   browser-Origin checks on every local mutation endpoint.
+- Portable researcher-metadata export and non-destructive import for sharing
+  catalogue titles/notes/tags and annotations without copying image trees.
+- In-memory caching of localized manifests, invalidated by manifest or
+  provenance changes.
 
 ## Getting started
 

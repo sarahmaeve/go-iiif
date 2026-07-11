@@ -27,23 +27,25 @@ import (
 )
 
 type options struct {
-	collection string
-	manifest   string // -manifest: preserve one manifest URL, no crawl/filter
-	langs      []string
-	from, to   int
-	hasDate    bool
-	places     []string
-	max        int
-	workers    int
-	journal    string
-	store      string // -store: persistent library root (resolved in run())
-	preserve   string // deprecated alias for -store (back-compat)
-	dryRun     bool   // classify only, do not download images
-	doctor     bool   // validate the local library and exit
-	servePort  int    // -serve PORT; non-zero = serve the store on localhost, don't crawl
-	tlsCert    string
-	tlsKey     string
-	noTLS      bool
+	collection     string
+	manifest       string // -manifest: preserve one manifest URL, no crawl/filter
+	langs          []string
+	from, to       int
+	hasDate        bool
+	places         []string
+	max            int
+	workers        int
+	journal        string
+	store          string // -store: persistent library root (resolved in run())
+	preserve       string // deprecated alias for -store (back-compat)
+	dryRun         bool   // classify only, do not download images
+	doctor         bool   // validate the local library and exit
+	exportMetadata string // write researcher-authored catalogue/annotations archive
+	importMetadata string // non-destructively merge a researcher metadata archive
+	servePort      int    // -serve PORT; non-zero = serve the store on localhost, don't crawl
+	tlsCert        string
+	tlsKey         string
+	noTLS          bool
 }
 
 const (
@@ -136,23 +138,25 @@ func splitCSV(s string) []string {
 func parseArgs(args []string) (*options, error) {
 	fs := flag.NewFlagSet("iiifpreserve", flag.ContinueOnError)
 	var (
-		collection = fs.String("collection", "", "IIIF Collection root URL to crawl")
-		manifest   = fs.String("manifest", "", "preserve a single manifest URL (no crawl; skips the filter)")
-		lang       = fs.String("lang", "", "comma-separated ISO 639-1 language codes")
-		from       = fs.Int("from", 0, "earliest year (inclusive)")
-		to         = fs.Int("to", 0, "latest year (inclusive)")
-		place      = fs.String("place", "", "comma-separated place substrings")
-		max        = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
-		workers    = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
-		journal    = fs.String("journal", "", "path to a resumable crawl journal (optional)")
-		store      = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
-		preserve   = fs.String("preserve", "", "deprecated alias for -store")
-		dryRun     = fs.Bool("dry-run", false, "classify only; do not download images")
-		doctor     = fs.Bool("doctor", false, "validate manifests, provenance, images, tiles, annotations, and catalogue")
-		serve      servePortFlag
-		tlsCert    = fs.String("tls-cert", defaultTLSCert, "TLS certificate PEM (default: mkcert convention path)")
-		tlsKey     = fs.String("tls-key", defaultTLSKey, "TLS private key PEM (default: mkcert convention path)")
-		noTLS      = fs.Bool("no-tls", false, "serve plain HTTP instead of HTTPS (debugging only)")
+		collection     = fs.String("collection", "", "IIIF Collection root URL to crawl")
+		manifest       = fs.String("manifest", "", "preserve a single manifest URL (no crawl; skips the filter)")
+		lang           = fs.String("lang", "", "comma-separated ISO 639-1 language codes")
+		from           = fs.Int("from", 0, "earliest year (inclusive)")
+		to             = fs.Int("to", 0, "latest year (inclusive)")
+		place          = fs.String("place", "", "comma-separated place substrings")
+		max            = fs.Int("max", 0, "stop after N manifests (0 = unlimited)")
+		workers        = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
+		journal        = fs.String("journal", "", "path to a resumable crawl journal (optional)")
+		store          = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
+		preserve       = fs.String("preserve", "", "deprecated alias for -store")
+		dryRun         = fs.Bool("dry-run", false, "classify only; do not download images")
+		doctor         = fs.Bool("doctor", false, "validate manifests, provenance, images, tiles, annotations, and catalogue")
+		exportMetadata = fs.String("export-metadata", "", "export researcher-authored catalogue fields and annotations to FILE")
+		importMetadata = fs.String("import-metadata", "", "non-destructively import researcher metadata from FILE")
+		serve          servePortFlag
+		tlsCert        = fs.String("tls-cert", defaultTLSCert, "TLS certificate PEM (default: mkcert convention path)")
+		tlsKey         = fs.String("tls-key", defaultTLSKey, "TLS private key PEM (default: mkcert convention path)")
+		noTLS          = fs.Bool("no-tls", false, "serve plain HTTP instead of HTTPS (debugging only)")
 	)
 	fs.Var(&serve, "serve", fmt.Sprintf(
 		"serve the store over HTTPS on localhost instead of crawling; "+
@@ -173,28 +177,34 @@ func parseArgs(args []string) (*options, error) {
 	if *doctor && (serve != 0 || *collection != "" || *manifest != "") {
 		return nil, errors.New("-doctor is mutually exclusive with -collection, -manifest, and -serve")
 	}
-	if serve == 0 && *collection == "" && *manifest == "" && !*doctor {
-		return nil, errors.New("one of -collection, -manifest, -serve, or -doctor is required")
+	if (*exportMetadata != "" || *importMetadata != "") &&
+		(serve != 0 || *collection != "" || *manifest != "" || *doctor || (*exportMetadata != "" && *importMetadata != "")) {
+		return nil, errors.New("-export-metadata and -import-metadata are standalone, mutually exclusive modes")
+	}
+	if serve == 0 && *collection == "" && *manifest == "" && !*doctor && *exportMetadata == "" && *importMetadata == "" {
+		return nil, errors.New("one of -collection, -manifest, -serve, -doctor, -export-metadata, or -import-metadata is required")
 	}
 	o := &options{
-		collection: *collection,
-		manifest:   *manifest,
-		langs:      splitCSV(*lang),
-		from:       *from,
-		to:         *to,
-		hasDate:    *from != 0 || *to != 0,
-		places:     splitCSV(*place),
-		max:        *max,
-		workers:    *workers,
-		journal:    *journal,
-		store:      *store,
-		preserve:   *preserve,
-		dryRun:     *dryRun,
-		doctor:     *doctor,
-		servePort:  int(serve),
-		tlsCert:    *tlsCert,
-		tlsKey:     *tlsKey,
-		noTLS:      *noTLS,
+		collection:     *collection,
+		manifest:       *manifest,
+		langs:          splitCSV(*lang),
+		from:           *from,
+		to:             *to,
+		hasDate:        *from != 0 || *to != 0,
+		places:         splitCSV(*place),
+		max:            *max,
+		workers:        *workers,
+		journal:        *journal,
+		store:          *store,
+		preserve:       *preserve,
+		dryRun:         *dryRun,
+		doctor:         *doctor,
+		exportMetadata: *exportMetadata,
+		importMetadata: *importMetadata,
+		servePort:      int(serve),
+		tlsCert:        *tlsCert,
+		tlsKey:         *tlsKey,
+		noTLS:          *noTLS,
 	}
 	return o, nil
 }
@@ -263,6 +273,12 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	if o.doctor {
 		return runDoctor(o, out, errOut)
 	}
+	if o.exportMetadata != "" {
+		return runMetadataExport(o, out, errOut)
+	}
+	if o.importMetadata != "" {
+		return runMetadataImport(o, out, errOut)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -310,6 +326,37 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	errOut.line(runSummary(o.dryRun, n, matched, images))
 
 	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
+}
+
+func runMetadataExport(o *options, out, errOut *cliWriter) int {
+	report, err := serve.ExportResearchMetadataFile(o.store, o.exportMetadata)
+	if err != nil {
+		errOut.line("iiifpreserve: metadata export:", err)
+		return 1
+	}
+	out.printf("iiifpreserve: exported %d bundle(s), %d annotation(s) to %s\n",
+		report.Bundles, report.Annotations, o.exportMetadata)
+	if out.err != nil {
+		return 1
+	}
+	return 0
+}
+
+func runMetadataImport(o *options, out, errOut *cliWriter) int {
+	report, err := serve.ImportResearchMetadataFile(o.store, o.importMetadata)
+	if err != nil {
+		errOut.line("iiifpreserve: metadata import:", err)
+		return 1
+	}
+	for _, warning := range report.Warnings {
+		out.line("WARN", warning)
+	}
+	out.printf("iiifpreserve: imported %d bundle(s): %d catalogue change(s), %d annotation(s) added, %d duplicate(s) ignored\n",
+		report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.Duplicates)
+	if out.err != nil {
 		return 1
 	}
 	return 0

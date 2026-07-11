@@ -51,6 +51,7 @@ type catalog struct {
 	once            sync.Once
 	wg              sync.WaitGroup
 	loadErr         error // protects an unreadable/corrupt sidecar from being overwritten
+	persistedStamp  string
 	refreshInterval time.Duration
 }
 
@@ -64,6 +65,7 @@ func newCatalog(root string) *catalog {
 
 	saved, err := c.load()
 	c.loadErr = err
+	c.persistedStamp = fileStamp(c.path)
 	for _, ref := range discoverBundles(root) {
 		s := summaryFor(ref.absDir, ref.slug)
 		if strings.HasSuffix(s.sourceStamp, ":-") {
@@ -238,6 +240,7 @@ func (c *catalog) saveLocked() error {
 	if err := os.Rename(tmpName, c.path); err != nil {
 		return fmt.Errorf("catalog: finalizing index: %w", err)
 	}
+	c.persistedStamp = fileStamp(c.path)
 	return nil
 }
 
@@ -261,6 +264,7 @@ func (c *catalog) wait() { c.wg.Wait() }
 // entry is admitted only after provenance.json exists: Preserve writes that
 // file last, so it is also the bundle's completion marker.
 func (c *catalog) refreshSources() (changes int) {
+	c.reloadPersistedResearch()
 	current := c.snapshot()
 	fresh := make(map[string]manifestSummary)
 	refs, err := discoverBundlesChecked(c.root)
@@ -313,6 +317,42 @@ func (c *catalog) refreshSources() (changes int) {
 		_ = c.saveLocked() // best effort; in-memory refresh remains useful
 	}
 	return changes
+}
+
+// reloadPersistedResearch notices catalogue edits written by a separate
+// non-destructive import process while the server is running. The sidecar is
+// atomically replaced, so every observed version is complete JSON.
+func (c *catalog) reloadPersistedResearch() {
+	stamp := fileStamp(c.path)
+	c.mu.RLock()
+	unchanged := stamp == c.persistedStamp
+	c.mu.RUnlock()
+	if unchanged || stamp == "-" {
+		return
+	}
+	saved, err := c.load()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if fileStamp(c.path) != stamp {
+		return // another edit won the race; the next refresh will load it
+	}
+	if err != nil {
+		c.loadErr = err
+		return
+	}
+	for dir, persisted := range saved {
+		entry, ok := c.entries[dir]
+		if !ok {
+			continue
+		}
+		entry.CustomTitle = persisted.CustomTitle
+		entry.Notes = persisted.Notes
+		entry.Tags = persisted.Tags
+		entry.finishDisplayFields()
+		c.entries[dir] = entry
+	}
+	c.loadErr = nil
+	c.persistedStamp = stamp
 }
 
 func normalizeCatalogTags(raw string) string {

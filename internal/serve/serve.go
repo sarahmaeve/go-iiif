@@ -31,6 +31,7 @@ type Server struct {
 	server                *http.Server
 	catalog               *catalog
 	annotationLocks       keyedMutexes
+	manifestCache         manifestCache
 	enforceLocalMutations bool
 	// logf, when set, receives one line per HTTP request as
 	// "METHOD STATUS PATH" (printf-style). Used to diagnose what a viewer
@@ -348,6 +349,22 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files http.Handler) {
 	dir := http.Dir(s.root)
 	clean := path.Clean(r.URL.Path)
+	bundlePath := path.Dir(clean)
+	absBundle := filepath.Join(s.root, filepath.FromSlash(bundlePath))
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	base := scheme + "://" + r.Host + strings.TrimSuffix(clean, "/manifest.json")
+	stamp := fileStamp(filepath.Join(absBundle, "manifest.json")) + ":" +
+		fileStamp(filepath.Join(absBundle, "provenance.json"))
+	cacheKey := base
+	if cached, ok := s.manifestCache.get(cacheKey, stamp); ok {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(cached) //nolint:errcheck // best-effort response write
+		return
+	}
 
 	mf, err := dir.Open(clean)
 	if err != nil {
@@ -361,18 +378,11 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 		return
 	}
 
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	base := scheme + "://" + r.Host + strings.TrimSuffix(clean, "/manifest.json")
-
 	out := manifest
-	if pf, perr := dir.Open(path.Join(path.Dir(clean), "provenance.json")); perr == nil {
+	if pf, perr := dir.Open(path.Join(bundlePath, "provenance.json")); perr == nil {
 		prov, _ := io.ReadAll(pf)
 		_ = pf.Close()
-		bundleDir := filepath.Join(s.root, filepath.FromSlash(path.Dir(clean)))
-		if rw, rerr := rewriteManifest(manifest, prov, base, bundleDir); rerr == nil {
+		if rw, rerr := rewriteManifest(manifest, prov, base, absBundle); rerr == nil {
 			out = rw
 		}
 	}
@@ -385,6 +395,7 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 	// stored annotation would render twice. The REST endpoint is the
 	// single source of truth for display, create, and edit.
 
+	s.manifestCache.put(cacheKey, stamp, out)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out) //nolint:errcheck // best-effort response write; client disconnect is not actionable
 }
