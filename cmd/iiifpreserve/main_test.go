@@ -274,6 +274,12 @@ func TestParseArgs(t *testing.T) {
 		if _, err := parseArgs([]string{"-import-metadata", "a", "-serve"}); err == nil {
 			t.Fatal("import and serve should be rejected")
 		}
+		if preview, err := parseArgs([]string{"-import-metadata", "a", "-dry-run"}); err != nil || !preview.dryRun {
+			t.Fatalf("import preview parse = %+v, %v", preview, err)
+		}
+		if _, err := parseArgs([]string{"-export-metadata", "a", "-dry-run"}); err == nil {
+			t.Fatal("export -dry-run should be rejected")
+		}
 	})
 
 	t.Run("collection and manifest are mutually exclusive", func(t *testing.T) {
@@ -402,6 +408,19 @@ func TestRunMetadataExportImport(t *testing.T) {
 
 	target := t.TempDir()
 	targetDir := writeBundle(target, "target/shared")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"-import-metadata", archive, "-store", target, "-dry-run"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("preview exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !contains(stdout.String(), "no files changed") {
+		t.Fatalf("preview output = %q", stdout.String())
+	}
+	for _, path := range []string{filepath.Join(target, ".iiifpreserve", "catalog.json"), filepath.Join(targetDir, "annotations.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("preview unexpectedly created %s: %v", path, err)
+		}
+	}
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"-import-metadata", archive, "-store", target}, &stdout, &stderr); code != 0 {

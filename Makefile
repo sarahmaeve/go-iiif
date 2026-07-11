@@ -2,7 +2,7 @@
 BINARY := iiifpreserve
 PKG    := ./cmd/iiifpreserve
 
-.PHONY: all build install test lint fmt vet tidy clean viewer
+.PHONY: all build install test browser-test lint fmt vet tidy clean viewer
 
 ## all: format, vet, lint, test, build (the pre-commit gate plus build)
 all: fmt vet lint test build
@@ -18,6 +18,11 @@ install:
 ## test: run the full offline test suite
 test:
 	go test ./...
+
+## browser-test: parked experimental Chrome smoke harness; skipped unless
+## IIIF_BROWSER_SMOKE=1 is explicitly set (and CHROME_BIN if needed).
+browser-test:
+	go test -tags=browser ./internal/serve -run BrowserSmoke -count=1
 
 ## lint: run golangci-lint across the module
 lint:

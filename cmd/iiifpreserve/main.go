@@ -1,7 +1,6 @@
-// Command iiifpreserve walks a IIIF Collection, normalizes each manifest's
-// metadata, and classifies it against a researcher's filter (DESIGN §3,
-// discovery+selection half). It prints the routing decision per manifest;
-// the preservation half (download/tile/store) is not yet built.
+// Command iiifpreserve discovers or directly fetches IIIF manifests, filters
+// collection results, preserves images plus local deep-zoom pyramids, serves
+// the offline library, diagnoses it, and exchanges researcher metadata.
 package main
 
 import (
@@ -181,6 +180,9 @@ func parseArgs(args []string) (*options, error) {
 		(serve != 0 || *collection != "" || *manifest != "" || *doctor || (*exportMetadata != "" && *importMetadata != "")) {
 		return nil, errors.New("-export-metadata and -import-metadata are standalone, mutually exclusive modes")
 	}
+	if *exportMetadata != "" && *dryRun {
+		return nil, errors.New("-dry-run is supported with -import-metadata, not -export-metadata")
+	}
 	if serve == 0 && *collection == "" && *manifest == "" && !*doctor && *exportMetadata == "" && *importMetadata == "" {
 		return nil, errors.New("one of -collection, -manifest, -serve, -doctor, -export-metadata, or -import-metadata is required")
 	}
@@ -334,7 +336,7 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 func runMetadataExport(o *options, out, errOut *cliWriter) int {
 	report, err := serve.ExportResearchMetadataFile(o.store, o.exportMetadata)
 	if err != nil {
-		errOut.line("iiifpreserve: metadata export:", err)
+		errOut.line("iiifpreserve:", err)
 		return 1
 	}
 	out.printf("iiifpreserve: exported %d bundle(s), %d annotation(s) to %s\n",
@@ -346,16 +348,21 @@ func runMetadataExport(o *options, out, errOut *cliWriter) int {
 }
 
 func runMetadataImport(o *options, out, errOut *cliWriter) int {
-	report, err := serve.ImportResearchMetadataFile(o.store, o.importMetadata)
+	report, err := serve.ImportResearchMetadataFileWithOptions(o.store, o.importMetadata, serve.MetadataImportOptions{DryRun: o.dryRun})
 	if err != nil {
-		errOut.line("iiifpreserve: metadata import:", err)
+		errOut.line("iiifpreserve:", err)
 		return 1
 	}
 	for _, warning := range report.Warnings {
 		out.line("WARN", warning)
 	}
-	out.printf("iiifpreserve: imported %d bundle(s): %d catalogue change(s), %d annotation(s) added, %d duplicate(s) ignored\n",
-		report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.Duplicates)
+	if o.dryRun {
+		out.printf("iiifpreserve: import preview for %d bundle(s): %d catalogue change(s), %d annotation(s) would be added, %d duplicate(s) ignored (no files changed)\n",
+			report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.Duplicates)
+	} else {
+		out.printf("iiifpreserve: imported %d bundle(s): %d catalogue change(s), %d annotation(s) added, %d duplicate(s) ignored\n",
+			report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.Duplicates)
+	}
 	if out.err != nil {
 		return 1
 	}

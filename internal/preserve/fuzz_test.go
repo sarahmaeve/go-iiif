@@ -85,8 +85,13 @@ func FuzzBlobStorePath(f *testing.F) {
 
 		// Exists must never report true for, nor stat, anything outside root;
 		// it returns an error for an escaping key rather than leaking.
-		if _, err := s.Exists(context.Background(), key); err == nil {
-			// ok: contained key (may or may not exist)
+		resolved, pathErr := s.path(key)
+		_, existsErr := s.Exists(context.Background(), key)
+		if pathErr != nil && existsErr == nil {
+			t.Fatalf("Exists(%q) accepted a key rejected by path(): %v", key, pathErr)
+		}
+		if pathErr == nil && !withinRoot(root, resolved) {
+			t.Fatalf("path(%q) = %q escapes root %q", key, resolved, root)
 		}
 		// Put must refuse to write outside root.
 		err := s.Put(context.Background(), key, []byte("x"))

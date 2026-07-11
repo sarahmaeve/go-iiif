@@ -49,6 +49,10 @@ type MetadataTransferReport struct {
 	Warnings         []string
 }
 
+type MetadataImportOptions struct {
+	DryRun bool
+}
+
 // ExportResearchMetadata writes a portable archive containing only
 // researcher-authored catalogue fields and annotations, never images/tiles.
 func ExportResearchMetadata(root string, w io.Writer) (MetadataTransferReport, error) {
@@ -121,6 +125,10 @@ func ExportResearchMetadataFile(root, filename string) (MetadataTransferReport, 
 // annotation ids are appended, exact duplicates are ignored, and conflicts
 // are reported as warnings.
 func ImportResearchMetadata(root string, r io.Reader) (MetadataTransferReport, error) {
+	return ImportResearchMetadataWithOptions(root, r, MetadataImportOptions{})
+}
+
+func ImportResearchMetadataWithOptions(root string, r io.Reader, opts MetadataImportOptions) (MetadataTransferReport, error) {
 	var report MetadataTransferReport
 	b, err := io.ReadAll(io.LimitReader(r, maxResearchMetadataSize+1))
 	if err != nil {
@@ -135,6 +143,14 @@ func ImportResearchMetadata(root string, r io.Reader) (MetadataTransferReport, e
 	}
 	if archive.Format != researchMetadataFormat || archive.Version != researchMetadataVersion {
 		return report, fmt.Errorf("metadata import: unsupported format %q version %d", archive.Format, archive.Version)
+	}
+	var lock *libraryWriteLock
+	if !opts.DryRun {
+		lock, err = acquireLibraryWriteLock(root)
+		if err != nil {
+			return report, fmt.Errorf("metadata import: %w", err)
+		}
+		defer func() { _ = lock.Close() }()
 	}
 
 	c := newCatalog(root)
@@ -164,24 +180,28 @@ func ImportResearchMetadata(root string, r io.Reader) (MetadataTransferReport, e
 		}
 		seenBundles[dir] = true
 		report.Bundles++
-		if mergeCatalogResearch(c, dir, incoming.Catalog, &report) {
+		if mergeCatalogResearch(c, dir, incoming.Catalog, &report, opts.DryRun) {
 			report.CatalogChanges++
 		}
-		mergeAnnotations(root, dir, incoming.Annotations, &report)
+		mergeAnnotations(root, dir, incoming.Annotations, &report, opts.DryRun)
 	}
 	return report, nil
 }
 
 func ImportResearchMetadataFile(root, filename string) (MetadataTransferReport, error) {
+	return ImportResearchMetadataFileWithOptions(root, filename, MetadataImportOptions{})
+}
+
+func ImportResearchMetadataFileWithOptions(root, filename string, opts MetadataImportOptions) (MetadataTransferReport, error) {
 	f, err := os.Open(filename) //nolint:gosec // explicit operator-supplied import path
 	if err != nil {
 		return MetadataTransferReport{}, fmt.Errorf("metadata import: opening: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	return ImportResearchMetadata(root, f)
+	return ImportResearchMetadataWithOptions(root, f, opts)
 }
 
-func mergeCatalogResearch(c *catalog, dir string, incoming researchCatalogFields, report *MetadataTransferReport) bool {
+func mergeCatalogResearch(c *catalog, dir string, incoming researchCatalogFields, report *MetadataTransferReport, dryRun bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[dir]
@@ -215,6 +235,9 @@ func mergeCatalogResearch(c *catalog, dir string, incoming researchCatalogFields
 	if !changed {
 		return false
 	}
+	if dryRun {
+		return true
+	}
 	before := c.entries[dir]
 	entry.finishDisplayFields()
 	c.entries[dir] = entry
@@ -226,7 +249,7 @@ func mergeCatalogResearch(c *catalog, dir string, incoming researchCatalogFields
 	return true
 }
 
-func mergeAnnotations(root, dir string, incoming []annotation.Annotation, report *MetadataTransferReport) {
+func mergeAnnotations(root, dir string, incoming []annotation.Annotation, report *MetadataTransferReport, dryRun bool) {
 	if len(incoming) == 0 {
 		return
 	}
@@ -259,6 +282,10 @@ func mergeAnnotations(root, dir string, incoming []annotation.Annotation, report
 		added++
 	}
 	if added == 0 {
+		return
+	}
+	if dryRun {
+		report.AnnotationsAdded += added
 		return
 	}
 	if err := annotation.Save(absDir, page); err != nil {

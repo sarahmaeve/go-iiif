@@ -1,7 +1,6 @@
-// Package serve exposes a preserved BlobStore tree over HTTP(S) as static
-// files — DESIGN §3 serve half, step 1. It does no IIIF logic: manifests are
-// served exactly as preserved (URL rewrite is the deferred step 3). Lifecycle
-// shape follows the signatory pipeline server.
+// Package serve exposes a preserved library over HTTP(S), rewriting manifests
+// and Image API metadata to local request-relative URLs, serving embedded
+// Mirador, and persisting catalogue and annotation research data.
 package serve
 
 import (
@@ -414,6 +413,11 @@ func (s *Server) ListenAndServe(ctx context.Context, addr, certFile, keyFile str
 // Serve serves on ln until ctx is cancelled, then shuts down gracefully.
 // Returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener, certFile, keyFile string) error {
+	libraryLock, err := acquireLibraryWriteLock(s.root)
+	if err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	defer func() { _ = libraryLock.Close() }()
 	s.catalog.startBackground(ctx)
 	defer s.catalog.wait()
 	s.enforceLocalMutations = true
@@ -435,7 +439,6 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, certFile, keyFile s
 		_ = s.server.Shutdown(shutdownCtx) //nolint:contextcheck // see comment above: Background-rooted on purpose
 	}()
 
-	var err error
 	if certFile != "" && keyFile != "" {
 		err = s.server.ServeTLS(ln, certFile, keyFile)
 	} else {

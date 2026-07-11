@@ -168,6 +168,7 @@ without copying the image/tile library:
 iiifpreserve -export-metadata my-research.json
 
 # Researcher B, after preserving the same manuscript(s)
+iiifpreserve -import-metadata my-research.json -dry-run
 iiifpreserve -import-metadata my-research.json
 ```
 
@@ -175,9 +176,11 @@ Import matches bundles by original manifest URL, so local directory layouts
 may differ. It is deliberately non-destructive: blank local titles/notes are
 filled, tags are unioned, new annotation IDs are added, exact duplicates are
 ignored, and conflicting local values are kept with a warning. Bundles absent
-from the recipient's library are skipped. The running server notices imported
-catalogue fields on its next shallow refresh; annotations are read directly
-from disk.
+from the recipient's library are skipped. `-dry-run` previews the same merge
+counts and warnings without changing any file. Stop the local server before an
+actual import; the server and importer use a library lock so two processes
+cannot overwrite researcher metadata concurrently. Restart the server after
+the import.
 
 ## What you have
 

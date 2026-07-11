@@ -3,6 +3,7 @@ package serve
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,26 @@ func TestResearchMetadataExportImportNonDestructive(t *testing.T) {
 	if err := annotation.Save(targetDir, annotation.Page{Type: "AnnotationPage", Items: local}); err != nil {
 		t.Fatal(err)
 	}
+	catalogBefore, err := os.ReadFile(filepath.Join(targetRoot, catalogDirName, catalogFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotationsBefore, err := os.ReadFile(filepath.Join(targetDir, annotation.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := ImportResearchMetadataWithOptions(targetRoot, bytes.NewReader(archive.Bytes()), MetadataImportOptions{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.CatalogChanges != 1 || preview.AnnotationsAdded != 1 || preview.Duplicates != 1 {
+		t.Fatalf("import preview = %+v", preview)
+	}
+	catalogAfter, _ := os.ReadFile(filepath.Join(targetRoot, catalogDirName, catalogFileName))
+	annotationsAfter, _ := os.ReadFile(filepath.Join(targetDir, annotation.FileName))
+	if !bytes.Equal(catalogBefore, catalogAfter) || !bytes.Equal(annotationsBefore, annotationsAfter) {
+		t.Fatal("dry-run import changed researcher metadata files")
+	}
 
 	result, err := ImportResearchMetadata(targetRoot, bytes.NewReader(archive.Bytes()))
 	if err != nil {
@@ -115,6 +136,22 @@ func TestResearchMetadataExportImportNonDestructive(t *testing.T) {
 	}
 	if second.AnnotationsAdded != 0 || second.Duplicates != 2 {
 		t.Fatalf("repeat import was not idempotent: %+v", second)
+	}
+}
+
+func TestResearchMetadataImportRespectsLibraryLock(t *testing.T) {
+	root := t.TempDir()
+	archive := `{"format":"iiifpreserve-research-metadata","version":1,"bundles":[]}`
+	lock, err := acquireLibraryWriteLock(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	if _, err := ImportResearchMetadata(root, strings.NewReader(archive)); !errors.Is(err, ErrLibraryBusy) {
+		t.Fatalf("locked import error = %v, want ErrLibraryBusy", err)
+	}
+	if _, err := ImportResearchMetadataWithOptions(root, strings.NewReader(archive), MetadataImportOptions{DryRun: true}); err != nil {
+		t.Fatalf("read-only preview should work while locked: %v", err)
 	}
 }
 

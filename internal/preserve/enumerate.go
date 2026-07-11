@@ -1,7 +1,6 @@
 // Package preserve turns a matched IIIF manifest into a preservation copy:
 // enumerate its canvas images, fetch the largest JPEG via the Image API, and
-// store them with the manifest (DESIGN §3 [match] onward). Grounded in the
-// reference tool (Segolene-Albouy/iiif-download): no tiling, no legal gating.
+// store them with the manifest and local level-0 deep-zoom pyramids.
 package preserve
 
 import (
