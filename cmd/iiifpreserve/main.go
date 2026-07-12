@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/sarahmaeve/go-iiif/internal/institution"
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
@@ -36,10 +37,12 @@ type options struct {
 	workers        int
 	journal        string
 	fresh          bool   // discard collection-run checkpoints, never preserved content
+	pageRetries    int    // additional same-run attempts after all variants fail
 	store          string // -store: persistent library root (resolved in run())
 	preserve       string // deprecated alias for -store (back-compat)
 	dryRun         bool   // classify only, do not download images
 	doctor         bool   // validate the local library and exit
+	ingestStatus   bool   // report crawl and incomplete-bundle recovery state
 	exportMetadata string // write researcher-authored catalogue/annotations archive
 	importMetadata string // non-destructively merge a researcher metadata archive
 	servePort      int    // -serve PORT; non-zero = serve the store on localhost, don't crawl
@@ -148,10 +151,12 @@ func parseArgs(args []string) (*options, error) {
 		workers        = fs.Int("workers", 1, "concurrent manifest workers (1 = sequential; per-host politeness still enforced)")
 		journal        = fs.String("journal", "", "deprecated crawl journal to migrate into automatic query-scoped ingest state")
 		fresh          = fs.Bool("fresh", false, "start a fresh collection scan without deleting preserved content")
+		pageRetries    = fs.Int("page-retries", 1, "additional attempts for a failed page in the same run")
 		store          = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
 		preserve       = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun         = fs.Bool("dry-run", false, "classify only; do not download images")
 		doctor         = fs.Bool("doctor", false, "validate manifests, provenance, images, tiles, annotations, and catalogue")
+		ingestStatus   = fs.Bool("ingest-status", false, "report incomplete bundles and crawl recovery state without changing files")
 		exportMetadata = fs.String("export-metadata", "", "export researcher-authored catalogue fields and annotations to FILE")
 		importMetadata = fs.String("import-metadata", "", "non-destructively import researcher metadata from FILE")
 		serve          servePortFlag
@@ -175,8 +180,14 @@ func parseArgs(args []string) (*options, error) {
 	if *collection != "" && *manifest != "" {
 		return nil, errors.New("-collection and -manifest are mutually exclusive")
 	}
-	if *doctor && (serve != 0 || *collection != "" || *manifest != "") {
-		return nil, errors.New("-doctor is mutually exclusive with -collection, -manifest, and -serve")
+	if *pageRetries < 0 {
+		return nil, errors.New("-page-retries must be zero or greater")
+	}
+	if *doctor && (serve != 0 || *collection != "" || *manifest != "" || *ingestStatus) {
+		return nil, errors.New("-doctor is mutually exclusive with -collection, -manifest, -serve, and -ingest-status")
+	}
+	if *ingestStatus && (serve != 0 || *collection != "" || *manifest != "" || *exportMetadata != "" || *importMetadata != "") {
+		return nil, errors.New("-ingest-status is a standalone mode")
 	}
 	if (*exportMetadata != "" || *importMetadata != "") &&
 		(serve != 0 || *collection != "" || *manifest != "" || *doctor || (*exportMetadata != "" && *importMetadata != "")) {
@@ -197,8 +208,8 @@ func parseArgs(args []string) (*options, error) {
 	if *fresh && *journal != "" {
 		return nil, errors.New("-fresh cannot be combined with deprecated -journal migration")
 	}
-	if serve == 0 && *collection == "" && *manifest == "" && !*doctor && *exportMetadata == "" && *importMetadata == "" {
-		return nil, errors.New("one of -collection, -manifest, -serve, -doctor, -export-metadata, or -import-metadata is required")
+	if serve == 0 && *collection == "" && *manifest == "" && !*doctor && !*ingestStatus && *exportMetadata == "" && *importMetadata == "" {
+		return nil, errors.New("one of -collection, -manifest, -serve, -doctor, -ingest-status, -export-metadata, or -import-metadata is required")
 	}
 	o := &options{
 		collection:     *collection,
@@ -212,10 +223,12 @@ func parseArgs(args []string) (*options, error) {
 		workers:        *workers,
 		journal:        *journal,
 		fresh:          *fresh,
+		pageRetries:    *pageRetries,
 		store:          *store,
 		preserve:       *preserve,
 		dryRun:         *dryRun,
 		doctor:         *doctor,
+		ingestStatus:   *ingestStatus,
 		exportMetadata: *exportMetadata,
 		importMetadata: *importMetadata,
 		servePort:      int(serve),
@@ -290,13 +303,16 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	if o.doctor {
 		return runDoctor(o, out, errOut)
 	}
+	if o.ingestStatus {
+		return runIngestStatus(o, out, errOut)
+	}
 	if o.exportMetadata != "" {
 		return runMetadataExport(o, out, errOut)
 	}
 	if o.importMetadata != "" {
 		return runMetadataImport(o, out, errOut)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if o.servePort != 0 {
@@ -309,17 +325,25 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 
 	// One polite fetcher shared across discovery, manifest, and image
 	// fetches so a single per-host rate limiter governs all traffic.
-	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
+	fetcher, err := newCLIFetcher(o.store)
+	if err != nil {
+		errOut.line("iiifpreserve:", err)
+		return 1
+	}
 
 	registry := institution.Builtin()
 	var src source.Source
 	var completionJournal source.Journal
+	var failureState *ingestFailures
+	var activeState *ingestState
+	var frontierSource *source.CollectionFrontierSource
 	if !o.dryRun {
 		state, err := openIngestState(o.store, o, registry)
 		if err != nil {
 			errOut.line("iiifpreserve:", err)
 			return 1
 		}
+		activeState = state
 		defer func() {
 			if cerr := state.Close(); cerr != nil {
 				errOut.line("iiifpreserve: closing ingest state:", cerr)
@@ -341,10 +365,14 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 			errOut.line("iiifpreserve:", frontierErr)
 			return 1
 		}
+		frontierSource = frontier
 		completionJournal = state.journal
+		failureState = state.failures
 		src = source.NewResumableSource(frontier, completionJournal)
-		errOut.printf("iiifpreserve: ingest run %s (%d manifest(s) already complete)\n",
-			state.descriptor.Fingerprint[:12], len(state.journal.Entries()))
+		stats := frontier.Stats()
+		pending := max(0, stats.Manifests-len(state.journal.Entries())) + stats.PendingCollections
+		errOut.printf("iiifpreserve: resuming %s: %d reused, %d pending, %d failed\n",
+			state.descriptor.Fingerprint[:12], len(state.journal.Entries()), pending, state.failures.Len())
 	} else {
 		src = source.NewCollectionSource(fetcher, o.collection)
 		if o.journal != "" {
@@ -365,7 +393,7 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		store = preserve.NewLocalBlobStore(o.store)
 	}
 
-	n, matched, images, failures := crawl(ctx, p.Run(ctx), completionJournal, fetcher, store, o.dryRun, o.max, out, errOut)
+	n, matched, images, failures := crawl(ctx, p.Run(ctx), completionJournal, failureState, fetcher, store, o.dryRun, o.max, o.pageRetries, out, errOut)
 	errOut.line(runSummary(o.dryRun, n, matched, images))
 
 	if out.err != nil || errOut.err != nil {
@@ -375,7 +403,24 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		errOut.printf("iiifpreserve: %d manifest(s) incomplete or failed; rerun to resume\n", failures)
 		return 1
 	}
+	if activeState != nil && frontierSource != nil {
+		stats := frontierSource.Stats()
+		pending := max(0, stats.Manifests-len(activeState.journal.Entries()))
+		if pending > 0 || stats.PendingCollections > 0 || activeState.failures.Len() > 0 {
+			errOut.printf("iiifpreserve: run remains incomplete (%d manifest(s), %d collection(s), %d failed); rerun to resume\n",
+				pending, stats.PendingCollections, activeState.failures.Len())
+			return 1
+		}
+	}
 	return 0
+}
+
+func newCLIFetcher(storeRoot string) (*source.PoliteFetcher, error) {
+	cache, err := source.NewFileConditionalStore(filepath.Join(storeRoot, ".iiifpreserve", "http-cache"))
+	if err != nil {
+		return nil, err
+	}
+	return source.NewPoliteFetcher(source.NewHTTPFetcher(source.WithConditionalStore(cache))), nil
 }
 
 func runMetadataExport(o *options, out, errOut *cliWriter) int {
@@ -439,9 +484,9 @@ func runDoctor(o *options, out, errOut *cliWriter) int {
 // crawl consumes the pipeline's classified results and, per Match, either
 // previews the per-work image count (-dry-run, no fetch, no store) or
 // preserves the images. It returns the manifest, match, and image tallies.
-// A dry run short-circuits before any download even when store is non-nil,
-// so the no-network guarantee does not depend on the caller nilling store.
-func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal source.Journal, fetcher source.Fetcher, store preserve.BlobStore, dryRun bool, max int, out, errOut *cliWriter) (n, matched, images, failures int) {
+// A dry run short-circuits before any image download even when store is
+// non-nil, so that guarantee does not depend on the caller nilling store.
+func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal source.Journal, failureState *ingestFailures, fetcher source.Fetcher, store preserve.BlobStore, dryRun bool, max, pageRetries int, out, errOut *cliWriter) (n, matched, images, failures int) {
 	for r := range results {
 		out.line(formatResult(r))
 		if out.err != nil {
@@ -451,6 +496,12 @@ func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal sourc
 		n++
 		if r.Err != nil {
 			failures++
+			if failureState != nil && !errors.Is(r.Err, context.Canceled) {
+				if err := failureState.MarkFailed(r.ManifestURL, r.Err); err != nil {
+					failures++
+					errOut.line("iiifpreserve: recording ingest failure", r.ManifestURL, "::", err)
+				}
+			}
 		}
 		completed := r.Err == nil && r.Class == metadata.NoMatch && !dryRun
 		if r.Err == nil && r.Class == metadata.Match {
@@ -466,15 +517,33 @@ func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal sourc
 					out.printf("%s", line)
 				}
 			case store != nil:
-				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest)
+				progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
+					errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
+				})
+				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest, progress, preserve.WithPageRetries(pageRetries))
 				if err != nil {
 					failures++
 					errOut.line("iiifpreserve: preserve", r.ManifestURL, "::", err)
+					if failureState != nil && !errors.Is(err, context.Canceled) {
+						if recordErr := failureState.MarkFailed(r.ManifestURL, err); recordErr != nil {
+							failures++
+							errOut.line("iiifpreserve: recording ingest failure", r.ManifestURL, "::", recordErr)
+						}
+					}
 				} else {
 					images += sum.Stored
 					completed = true
 					out.printf("  preserved %d image(s) to %s (reused %d, repaired %d)\n",
 						sum.Stored, sum.Dir, sum.Skipped, sum.Repaired)
+				}
+			}
+		}
+		if completed && journal != nil {
+			if failureState != nil {
+				if err := failureState.ClearFailure(r.ManifestURL); err != nil {
+					failures++
+					errOut.line("iiifpreserve: clearing ingest failure", r.ManifestURL, "::", err)
+					completed = false
 				}
 			}
 		}
@@ -528,7 +597,11 @@ func serveBanner(scheme, addr, dir string) string {
 // HTTPS fetcher as the crawler (no curl). -dry-run fetches and reports
 // without storing.
 func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
-	fetcher := source.NewPoliteFetcher(source.NewHTTPFetcher())
+	fetcher, err := newCLIFetcher(o.store)
+	if err != nil {
+		errOut.line("iiifpreserve:", err)
+		return 1
+	}
 
 	body, err := fetcher.Fetch(ctx, o.manifest)
 	if err != nil {
@@ -554,7 +627,7 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
 		errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
 	})
-	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body, progress)
+	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body, progress, preserve.WithPageRetries(o.pageRetries))
 	if err != nil {
 		errOut.line("iiifpreserve:", err)
 		return 1

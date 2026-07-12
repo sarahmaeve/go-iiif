@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sarahmaeve/go-iiif/internal/source"
 )
 
 // jpegEverything serves the same fake JPEG for any image request, and the
@@ -305,6 +307,32 @@ func TestPreserve_IncompleteBundleHasNoProvenance(t *testing.T) {
 	}
 	if ok, statErr := store.Exists(context.Background(), dir+"/manifest.json"); statErr != nil || !ok {
 		t.Fatalf("restart manifest = %v, %v; want preserved", ok, statErr)
+	}
+}
+
+type retryPageFetcher struct {
+	calls int
+	image []byte
+}
+
+func (f *retryPageFetcher) Fetch(_ context.Context, _ string) ([]byte, error) {
+	f.calls++
+	if f.calls <= len(imageSuffixes) {
+		return nil, source.ErrNotFound
+	}
+	return f.image, nil
+}
+
+func TestPreserve_PageRetryPolicy(t *testing.T) {
+	const manifestURL = "https://g.example/iiif/ms/manifest.json"
+	const manifest = `{"sequences":[{"canvases":[{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/flaky"}}}]}]}]}`
+	fetcher := &retryPageFetcher{image: synthJPEG(t, 32, 24)}
+	sum, err := Preserve(context.Background(), fetcher, NewLocalBlobStore(t.TempDir()), manifestURL, []byte(manifest), WithPageRetries(1))
+	if err != nil {
+		t.Fatalf("Preserve with retry: %v", err)
+	}
+	if sum.Stored != 1 || fetcher.calls != len(imageSuffixes)+1 {
+		t.Fatalf("summary=%+v calls=%d, want one stored after retry", sum, fetcher.calls)
 	}
 }
 

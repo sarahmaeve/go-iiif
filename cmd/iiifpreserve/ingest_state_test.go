@@ -184,7 +184,7 @@ func TestCrawlMarksOnlyDurableRealRunOutcomes(t *testing.T) {
 	}
 	journal := source.NewMemoryJournal()
 	store := &recordingStore{}
-	crawl(context.Background(), results, journal, &recordingFetcher{}, store, false, 0,
+	crawl(context.Background(), results, journal, nil, &recordingFetcher{}, store, false, 0, 0,
 		&cliWriter{w: io.Discard}, &cliWriter{w: io.Discard})
 	if !journal.Done(noMatchURL) || !journal.Done(matchURL) {
 		t.Fatalf("durable outcomes not journaled: no-match=%v match=%v", journal.Done(noMatchURL), journal.Done(matchURL))
@@ -194,7 +194,7 @@ func TestCrawlMarksOnlyDurableRealRunOutcomes(t *testing.T) {
 	dryResults := func(yield func(pipeline.Result) bool) {
 		yield(pipeline.Result{ManifestURL: noMatchURL, Class: metadata.NoMatch})
 	}
-	crawl(context.Background(), dryResults, dryJournal, &recordingFetcher{}, store, true, 0,
+	crawl(context.Background(), dryResults, dryJournal, nil, &recordingFetcher{}, store, true, 0, 0,
 		&cliWriter{w: io.Discard}, &cliWriter{w: io.Discard})
 	if dryJournal.Done(noMatchURL) {
 		t.Fatal("dry-run changed ingest completion state")
@@ -204,9 +204,39 @@ func TestCrawlMarksOnlyDurableRealRunOutcomes(t *testing.T) {
 	failedResults := func(yield func(pipeline.Result) bool) {
 		yield(pipeline.Result{ManifestURL: "https://example.org/failed", Err: errBoom})
 	}
-	crawl(context.Background(), failedResults, failedJournal, &recordingFetcher{}, store, false, 0,
+	crawl(context.Background(), failedResults, failedJournal, nil, &recordingFetcher{}, store, false, 0, 0,
 		&cliWriter{w: io.Discard}, &cliWriter{w: io.Discard})
 	if failedJournal.Done("https://example.org/failed") {
 		t.Fatal("failed manifest was marked complete")
+	}
+}
+
+func TestCrawlPersistsAndClearsFailureState(t *testing.T) {
+	failures, err := openIngestFailures(filepath.Join(t.TempDir(), "failures.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const manifestURL = "https://example.org/manifest"
+	failed := func(yield func(pipeline.Result) bool) {
+		yield(pipeline.Result{ManifestURL: manifestURL, Err: errBoom})
+	}
+	crawl(context.Background(), failed, source.NewMemoryJournal(), failures, &recordingFetcher{}, &recordingStore{}, false, 0, 0,
+		&cliWriter{w: io.Discard}, &cliWriter{w: io.Discard})
+	if failures.Len() != 1 {
+		t.Fatalf("failure count = %d, want 1", failures.Len())
+	}
+	reopened, err := openIngestFailures(failures.path)
+	if err != nil || reopened.Len() != 1 {
+		t.Fatalf("reopened failures = %+v, %v", reopened, err)
+	}
+
+	succeeded := func(yield func(pipeline.Result) bool) {
+		yield(pipeline.Result{ManifestURL: manifestURL, Class: metadata.NoMatch})
+	}
+	journal := source.NewMemoryJournal()
+	crawl(context.Background(), succeeded, journal, reopened, &recordingFetcher{}, &recordingStore{}, false, 0, 0,
+		&cliWriter{w: io.Discard}, &cliWriter{w: io.Discard})
+	if reopened.Len() != 0 || !journal.Done(manifestURL) {
+		t.Fatalf("successful retry left failures=%d done=%v", reopened.Len(), journal.Done(manifestURL))
 	}
 }

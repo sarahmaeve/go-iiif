@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -172,7 +173,9 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 	var cached CacheEntry
 	haveCached := false
 	if f.store != nil {
-		if cached, haveCached = f.store.Get(rawURL); haveCached {
+		if cached, haveCached, err = f.store.Get(rawURL); err != nil {
+			return nil, err
+		} else if haveCached {
 			if cached.ETag != "" {
 				req.Header.Set("If-None-Match", cached.ETag)
 			}
@@ -220,9 +223,11 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 		return nil, fmt.Errorf("%w: %s (content-type %q)", ErrNonResource, rawURL, ct)
 	}
 
-	if f.store != nil {
+	if f.store != nil && json.Valid(body) && len(body) <= maxConditionalBodyBytes {
 		if etag, lm := resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"); etag != "" || lm != "" {
-			f.store.Put(rawURL, CacheEntry{ETag: etag, LastModified: lm, Body: body})
+			if err := f.store.Put(rawURL, CacheEntry{ETag: etag, LastModified: lm, ContentType: resp.Header.Get("Content-Type"), Body: body}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return body, nil

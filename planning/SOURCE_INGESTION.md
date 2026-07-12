@@ -1,6 +1,6 @@
 # Resumable source ingestion
 
-Status: Slices 1–3 implemented; Slices 4–5 proposed
+Status: Slices 1–5 implemented
 
 ## Goal
 
@@ -65,7 +65,29 @@ Slice 3 is implemented:
 - explicit `-fresh` clears the query's frontier and completion journal while
   retaining preserved bundles, annotations, and catalogue research metadata.
 
-Slices 4–5 remain future ingestion work.
+Slice 4 is implemented:
+
+- validator-backed collection and manifest JSON responses are cached in a
+  versioned, SHA-256-keyed file store under `.iiifpreserve/http-cache/`;
+- ETag and Last-Modified validators survive process restarts and a 304 is
+  satisfied from the atomically committed cached body;
+- content type is retained with each bounded response body; and
+- page-image responses are never placed in this cache because committed JPEGs
+  remain their durable checkpoint.
+
+Slice 5 is implemented:
+
+- both SIGINT and SIGTERM cancel active CLI work cleanly;
+- collection runs announce `resuming <run>` with reused, pending, and failed
+  counts;
+- query-scoped failure records make failed counts durable and are cleared only
+  after a durable final disposition;
+- read-only `-ingest-status` reports crawl frontiers, completions, failures,
+  and bundles that have a manifest but no provenance completion marker;
+- missing or failed pages are retried on every resume, while `-page-retries N`
+  explicitly controls additional same-run page attempts; and
+- collection mode exits non-zero while discovered manifests, collection
+  frontier work, or recorded failures remain.
 
 ## Baseline before Slice 1
 
@@ -185,7 +207,7 @@ Commit frontier changes atomically after each collection document. A restart
 then continues from the pending frontier instead of walking from the root.
 Deduplication remains URL-based within the run.
 
-### Slice 4: durable HTTP validation cache
+### Slice 4: durable HTTP validation cache (implemented)
 
 Persist ETag, Last-Modified, content type, and the small response body needed
 to satisfy a 304 for collection documents and manifests. Wire it into the
@@ -196,7 +218,7 @@ Use bounded files under `.iiifpreserve/`, with atomic writes and a versioned
 format. SQLite is optional here, not required; a small keyed file store is
 adequate until measured scale or concurrent querying justifies a database.
 
-### Slice 5: recovery-oriented CLI
+### Slice 5: recovery-oriented CLI (implemented)
 
 - Handle `SIGTERM` as well as interrupt where supported.
 - Print `resuming <run>` and counts of reused, pending, and failed items.

@@ -217,6 +217,12 @@ request-relative, so the library works no matter where it lives.
   makes no collection-discovery requests; use `-fresh` to scan the source from
   its root again for newly added or changed manuscripts. This clears only the
   query's ingest checkpoints, never preserved bundles or research metadata.
+  Collection and manifest validators are cached automatically under
+  `.iiifpreserve/http-cache/`, so unchanged JSON can be satisfied by a 304;
+  page images are deliberately excluded. Use `-ingest-status` for a read-only
+  report of pending/failed crawl work and incomplete bundles. Missing pages
+  are attempted again on every rerun; `-page-retries N` selects how many
+  additional attempts happen in the same run (default 1).
 
 - **Gallica/BnF** — works, but BnF is rate-limited (13 s/host by design),
   so a manuscript takes a while. It's resumable and shows per-page

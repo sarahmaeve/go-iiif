@@ -179,6 +179,23 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("ingest status and page retry policy", func(t *testing.T) {
+		o, err := parseArgs([]string{"-ingest-status", "-store", "/data/iiif"})
+		if err != nil || !o.ingestStatus {
+			t.Fatalf("status parse = %+v, %v", o, err)
+		}
+		if _, err := parseArgs([]string{"-ingest-status", "-collection", "https://example.org/c"}); err == nil {
+			t.Fatal("status and collection should be mutually exclusive")
+		}
+		o, err = parseArgs([]string{"-manifest", "https://example.org/m", "-page-retries", "3"})
+		if err != nil || o.pageRetries != 3 {
+			t.Fatalf("page retry parse = %+v, %v", o, err)
+		}
+		if _, err := parseArgs([]string{"-manifest", "https://example.org/m", "-page-retries", "-1"}); err == nil {
+			t.Fatal("negative page retries should fail")
+		}
+	})
+
 	t.Run("-serve=PORT picks an explicit port", func(t *testing.T) {
 		o, err := parseArgs([]string{"-serve=9000"})
 		if err != nil {
@@ -560,7 +577,7 @@ func TestCrawl_DryRunEnumeratesWithoutDownloading(t *testing.T) {
 	out := &cliWriter{w: &sb}
 	errOut := &cliWriter{w: io.Discard}
 
-	n, matched, images, failures := crawl(context.Background(), results, nil, fetcher, store, true /*dryRun*/, 0, out, errOut)
+	n, matched, images, failures := crawl(context.Background(), results, nil, nil, fetcher, store, true /*dryRun*/, 0, 0, out, errOut)
 
 	if n != 2 || matched != 1 || images != 2 || failures != 0 {
 		t.Fatalf("n,matched,images,failures = %d,%d,%d,%d; want 2,1,2,0", n, matched, images, failures)
@@ -581,7 +598,7 @@ func TestCrawl_CountsFailedManifestForExitStatus(t *testing.T) {
 		yield(pipeline.Result{ManifestURL: "https://ex.org/broken", Err: errBoom})
 	}
 	var stdout, stderr strings.Builder
-	n, matched, images, failures := crawl(context.Background(), results, nil, &recordingFetcher{}, nil, false, 0,
+	n, matched, images, failures := crawl(context.Background(), results, nil, nil, &recordingFetcher{}, nil, false, 0, 0,
 		&cliWriter{w: &stdout}, &cliWriter{w: &stderr})
 	if n != 1 || matched != 0 || images != 0 || failures != 1 {
 		t.Fatalf("crawl = %d,%d,%d,%d; want 1,0,0,1", n, matched, images, failures)

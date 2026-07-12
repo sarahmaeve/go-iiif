@@ -33,6 +33,45 @@ type collectionFrontier struct {
 	Complete  bool     `json:"complete"`
 }
 
+// CollectionFrontierStats is a read-only summary used by recovery-oriented
+// CLI reporting.
+type CollectionFrontierStats struct {
+	PendingCollections int
+	VisitedCollections int
+	Manifests          int
+	Complete           bool
+}
+
+// Stats reports the currently committed frontier state.
+func (s *CollectionFrontierSource) Stats() CollectionFrontierStats {
+	return CollectionFrontierStats{
+		PendingCollections: len(s.state.Pending), VisitedCollections: len(s.state.Visited),
+		Manifests: len(s.state.Manifests), Complete: s.state.Complete,
+	}
+}
+
+// ReadCollectionFrontierStats reads a frontier without modifying it.
+func ReadCollectionFrontierStats(statePath string) (CollectionFrontierStats, error) {
+	b, err := os.ReadFile(statePath) //nolint:gosec // caller supplies a state path below its configured store
+	if errors.Is(err, os.ErrNotExist) {
+		return CollectionFrontierStats{}, nil
+	}
+	if err != nil {
+		return CollectionFrontierStats{}, fmt.Errorf("source: reading collection frontier: %w", err)
+	}
+	var state collectionFrontier
+	if err := json.Unmarshal(b, &state); err != nil {
+		return CollectionFrontierStats{}, fmt.Errorf("source: decoding collection frontier: %w", err)
+	}
+	if state.Version != collectionFrontierVersion {
+		return CollectionFrontierStats{}, fmt.Errorf("source: unsupported collection frontier version %d", state.Version)
+	}
+	return CollectionFrontierStats{
+		PendingCollections: len(state.Pending), VisitedCollections: len(state.Visited),
+		Manifests: len(state.Manifests), Complete: state.Complete,
+	}, nil
+}
+
 // OpenCollectionFrontierSource opens or creates the collection discovery
 // frontier at statePath. The path should be scoped to the ingest query
 // fingerprint so unrelated collections never share discovery state.

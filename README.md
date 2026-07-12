@@ -36,7 +36,9 @@ no external tools and the copy survives network outages.
   provenance changes.
 - Crash-safe collection ingestion with query-isolated completion ledgers and
   an atomic discovery frontier; reruns resume at the pending collection and
-  reuse committed page images without HTTP.
+  reuse committed page images without HTTP. A durable conditional-GET cache,
+  SIGTERM-safe cancellation, explicit page retries, and read-only
+  `-ingest-status` reporting make recovery observable.
 
 ## Getting started
 

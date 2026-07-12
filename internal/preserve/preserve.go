@@ -94,7 +94,10 @@ type ProgressEvent struct {
 	Action       string // "stored" | "skipped" | "repaired" | "failed"
 }
 
-type preserveConfig struct{ progress func(ProgressEvent) }
+type preserveConfig struct {
+	progress    func(ProgressEvent)
+	pageRetries int
+}
 
 // Option configures Preserve.
 type Option func(*preserveConfig)
@@ -102,6 +105,17 @@ type Option func(*preserveConfig)
 // WithProgress invokes fn once per image with its disposition.
 func WithProgress(fn func(ProgressEvent)) Option {
 	return func(c *preserveConfig) { c.progress = fn }
+}
+
+// WithPageRetries retries a page this many additional times after all of its
+// image-service variants fail. Missing or corrupt pages are always attempted
+// again on the next preservation run regardless of this same-run policy.
+func WithPageRetries(n int) Option {
+	return func(c *preserveConfig) {
+		if n > 0 {
+			c.pageRetries = n
+		}
+	}
 }
 
 // Preserve fetches every canvas image of a matched manifest at the largest
@@ -209,7 +223,15 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			// again and atomically replace it below.
 		}
 
-		data, used, variant, err := FetchImage(ctx, fetcher, img.ServiceID, preferred)
+		var data []byte
+		var used string
+		var variant int
+		for attempt := 0; attempt <= cfg.pageRetries; attempt++ {
+			data, used, variant, err = FetchImage(ctx, fetcher, img.ServiceID, preferred)
+			if err == nil || ctx.Err() != nil {
+				break
+			}
+		}
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return sum, ctxErr

@@ -49,7 +49,9 @@ type ingestState struct {
 	descriptor   ingestRunDescriptor
 	journalPath  string
 	frontierPath string
+	failurePath  string
 	journal      *source.FileJournal
+	failures     *ingestFailures
 }
 
 func newIngestRunDescriptor(o *options, registry institution.Registry) (ingestRunDescriptor, error) {
@@ -169,11 +171,12 @@ func openIngestState(root string, o *options, registry institution.Registry) (*i
 
 	journalPath := filepath.Join(dir, descriptor.Fingerprint+".done")
 	frontierPath := filepath.Join(dir, descriptor.Fingerprint+".frontier.json")
+	failurePath := filepath.Join(dir, descriptor.Fingerprint+".failures.json")
 	if o.fresh {
 		// Delete discovery first: interruption between these removals may
 		// repeat fewer old manifests than requested, but can never retain a
 		// completed frontier that hides newly added upstream manuscripts.
-		for _, path := range []string{frontierPath, journalPath} {
+		for _, path := range []string{frontierPath, journalPath, failurePath} {
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return nil, fmt.Errorf("ingest state: resetting %s: %w", path, err)
 			}
@@ -183,7 +186,12 @@ func openIngestState(root string, o *options, registry institution.Registry) (*i
 	if err != nil {
 		return nil, err
 	}
-	return &ingestState{descriptor: descriptor, journalPath: journalPath, frontierPath: frontierPath, journal: journal}, nil
+	failures, err := openIngestFailures(failurePath)
+	if err != nil {
+		_ = journal.Close()
+		return nil, err
+	}
+	return &ingestState{descriptor: descriptor, journalPath: journalPath, frontierPath: frontierPath, failurePath: failurePath, journal: journal, failures: failures}, nil
 }
 
 func writeIngestFile(path string, data []byte) error {
