@@ -14,7 +14,7 @@
 import * as MiradorAll from 'mirador';
 import maePlugins from 'mirador-annotation-editor';
 import maeCss from 'mirador-annotation-editor/dist/index.css?inline';
-import HttpAnnotationAdapter from './adapter.js';
+import HttpAnnotationAdapter, { ReadOnlyAnnotationAdapter } from './adapter.js';
 
 // Single-asset model: inject MAE's stylesheet at load instead of emitting
 // a sibling .css the Go embed would have to know about.
@@ -41,11 +41,23 @@ function annotationEndpoint() {
 }
 
 export function viewer(config, plugins = []) {
+  const {
+    endpointByCanvas,
+    strictRouting = false,
+    ...annotationConfig
+  } = (config && config.annotation) || {};
   const merged = {
     ...config,
     annotation: {
-      adapter: (canvasId) => new HttpAnnotationAdapter(annotationEndpoint(), canvasId),
-      ...(config && config.annotation),
+      adapter: (canvasId) => {
+        const endpoint = endpointByCanvas && endpointByCanvas[canvasId];
+        if (endpoint) {
+          return new HttpAnnotationAdapter(new URL(endpoint, document.baseURI).href, canvasId);
+        }
+        if (strictRouting) return new ReadOnlyAnnotationAdapter(canvasId);
+        return new HttpAnnotationAdapter(annotationEndpoint(), canvasId);
+      },
+      ...annotationConfig,
     },
   };
   return MiradorAll.viewer(merged, [...maePlugins, ...plugins]);
@@ -55,5 +67,5 @@ export function viewer(config, plugins = []) {
 // local `viewer` above shadows the star-exported one.
 export * from 'mirador';
 export const { settings } = MiradorAll;
-export { HttpAnnotationAdapter };
+export { HttpAnnotationAdapter, ReadOnlyAnnotationAdapter };
 export default { ...MiradorAll.default, viewer };

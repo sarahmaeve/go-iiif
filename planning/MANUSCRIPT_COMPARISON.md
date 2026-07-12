@@ -1,6 +1,6 @@
 # Manuscript comparison workspace
 
-Status: proposed
+Status: Slices 1–2 implemented; Slice 3 proposed; Slice 4 deferred pending research use
 
 ## Purpose
 
@@ -28,9 +28,10 @@ The tray:
 - disables **Compare manuscripts** until two are selected; and
 - explains the four-manuscript limit rather than silently dropping entries.
 
-Selection initially lives in the page and the resulting URL. It does not need
-to be written to the catalogue. Refreshing the catalogue before opening the
-workspace may clear the tray; opening the comparison produces a reusable URL.
+Selection lives in the page URL and is not written to the catalogue. The tray
+updates repeated `doc` parameters with `history.replaceState`, so refreshing
+the catalogue or using **Change selection** restores the ordered selection.
+Opening the comparison produces the same reusable URL contract.
 
 ### Comparison workspace
 
@@ -98,30 +99,41 @@ windows: selected.map((item) => ({ manifestId: item.manifest }))
 Let Mirador choose window identifiers and initial layout. Avoid depending on
 undocumented Redux actions for the first release.
 
-### Annotation routing prerequisite
+### Annotation routing
 
 The current embedded wrapper derives one annotation endpoint from the single
 `#mirador` element's `data-manifest`. That is not correct in a multi-manifest
 workspace: an annotation created on manuscript B could otherwise be sent to
 manuscript A.
 
-Before enabling annotation editing on the comparison page, build a mapping
+The implemented comparison page builds a mapping
 from every selected manifest's canvas IDs to its local
 `/<bundle>/annotations` endpoint. The server can derive the canvas IDs while
-reading the already-local manifests. Supply that map to the page as JSON and
-configure MAE's adapter as:
+reading the already-local manifests. Supply that map to the page as JSON. The
+comparison config passes it through the embedded wrapper's strict routing
+extension:
 
 ```javascript
-adapter: (canvasId) => new Mirador.HttpAnnotationAdapter(
-  annotationEndpointByCanvas[canvasId],
-  canvasId,
-)
+annotation: {
+  endpointByCanvas: annotationEndpointByCanvas,
+  strictRouting: true,
+}
 ```
 
-If a canvas is not in the map, the adapter must fail closed: annotation
-editing is disabled for that canvas and must never fall back to another
-manuscript's endpoint. The ordinary one-manuscript viewer may retain its
-current convenience fallback.
+The wrapper constructs `HttpAnnotationAdapter` only when the canvas exists in
+that map.
+
+If a canvas is not in the map, the adapter fails closed: reads return an empty
+page and create/update/delete reject without making a request. It never falls
+back to another manuscript's endpoint. The ordinary one-manuscript viewer
+retains its current convenience fallback. A canvas ID claimed by two selected
+manifests is rejected as an ambiguous comparison rather than choosing an
+owner. An unreadable manifest remains a visible failed Mirador window but
+contributes no canvas routes, so it cannot mutate annotations.
+
+Slices 1 and 2 were deliberately delivered together. The embedded viewer
+always includes the annotation editor, so a multi-window workspace without
+strict canvas ownership would have been an unsafe intermediate release.
 
 ### State and persistence
 
@@ -182,10 +194,10 @@ silently expanding catalogue entries now.
 
 ## Delivery slices
 
-1. Multi-select catalogue tray, validated comparison route, and read-only
-   multi-window workspace.
-2. Correct per-canvas annotation routing and annotation editing.
+1. **Implemented with Slice 2:** multi-select catalogue tray, validated
+   comparison route, and multi-window workspace.
+2. **Implemented with Slice 1:** correct strict per-canvas annotation routing
+   and annotation editing.
 3. Optional deep links to initial canvases and named saved comparison sets.
 4. Only after research use demonstrates a need: explicit synchronized zoom,
    pan, or page pairing.
-

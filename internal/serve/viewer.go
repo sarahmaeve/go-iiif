@@ -46,6 +46,7 @@ const (
 	fontsRoutePrefix    = "/__viewer__/fonts/"
 	catalogEditRoute    = "/__catalog__/edit"
 	catalogRefreshRoute = "/__catalog__/refresh"
+	compareRoute        = "/__compare__/"
 )
 
 // indexTmpl is the landing page: a researcher with no external viewer lands
@@ -110,8 +111,18 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 .edit button{justify-self:start;border:0;background:var(--primary);color:white;padding:8px 14px;cursor:pointer;
  font:600 .7rem "IBM Plex Mono",ui-monospace,monospace;text-transform:uppercase;letter-spacing:.1em}
 .edit button:hover{background:var(--accent)}
+.compare-add{margin-top:12px;border:1px solid var(--border);background:transparent;color:var(--primary);padding:7px 10px;cursor:pointer;
+ font:600 .68rem "IBM Plex Mono",ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}
+.compare-add:hover,.compare-add[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:var(--surface)}
+.compare-tray{position:fixed;z-index:20;left:0;right:0;bottom:0;background:var(--primary);color:white;border-top:3px solid var(--accent);padding:14px 24px 16px;box-shadow:0 -4px 18px rgba(28,25,23,.18)}
+.compare-tray[hidden]{display:none}.compare-inner{max-width:58rem;margin:0 auto}.compare-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.compare-head h2{margin:0;font:700 1.15rem "Newsreader",Georgia,serif}.compare-help{margin:0;color:#ddd4c9;font-size:.82rem}
+.compare-list{list-style:none;margin:10px 0;padding:0;display:grid;gap:6px}.compare-list li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border-top:1px solid #52606c;padding-top:6px}
+.compare-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.compare-item-actions{display:flex;gap:5px}.compare-item-actions button{border:1px solid #8795a1;background:transparent;color:white;cursor:pointer;padding:3px 7px;font:600 .62rem "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.05em}.compare-item-actions button:disabled{opacity:.35;cursor:default}
+.compare-footer{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:10px}.compare-live{margin:0;color:#ddd4c9;font-size:.82rem}.compare-open{background:var(--surface);color:var(--primary);padding:8px 13px;text-decoration:none;font:600 .68rem "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.compare-open[aria-disabled="true"]{opacity:.45;pointer-events:none}.compare-open:not([aria-disabled="true"]):hover{color:var(--accent)}
+body.compare-active .page{padding-bottom:22rem}
 .empty{font-style:italic;color:var(--muted);margin-top:32px}
-@media(max-width:36rem){.catalogue-tools{grid-template-columns:1fr}.catalogue-bar{align-items:flex-start;flex-direction:column}}
+@media(max-width:36rem){.catalogue-tools{grid-template-columns:1fr}.catalogue-bar,.compare-head,.compare-footer{align-items:flex-start;flex-direction:column}.compare-tray{padding:12px 16px}.compare-list li{grid-template-columns:1fr}.compare-item-actions{flex-wrap:wrap}body.compare-active .page{padding-bottom:30rem}}
 </style>
 <body>
 <main class="page">
@@ -130,6 +141,7 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 <p class="meta"><a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a><span class="sep">·</span>{{.Languages}}<span class="sep">·</span>{{.Pages}} pp<span class="sep">·</span>{{.Size}}</p>
 {{if .Notes}}<p class="notes">{{.Notes}}</p>{{end}}
 {{if .Tags}}<p class="tags">Tags · {{.Tags}}</p>{{end}}
+<button class="compare-add" type="button" data-compare-dir="{{.Dir}}" data-compare-title="{{.Title}}" aria-pressed="false" aria-controls="comparison-tray">Add to comparison</button>
 <details class="edit"><summary>Edit title or notes</summary>
 <form method="post" action="` + catalogEditRoute + `">
 <input type="hidden" name="dir" value="{{.Dir}}">
@@ -143,6 +155,12 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
 {{end}}</section>
 <p class="empty" id="catalog-no-results" hidden>No manuscripts match this search.</p>
 </main>
+<section class="compare-tray" id="comparison-tray" aria-labelledby="comparison-title" hidden>
+<div class="compare-inner">
+<div class="compare-head"><h2 id="comparison-title">Manuscript comparison</h2><p class="compare-help">Choose 2–4 manuscripts. Order is preserved in the comparison link.</p></div>
+<ol class="compare-list" id="comparison-list"></ol>
+<div class="compare-footer"><p class="compare-live" id="comparison-live" aria-live="polite">Select at least two manuscripts.</p><a class="compare-open" id="comparison-open" href="` + compareRoute + `" aria-disabled="true">Compare manuscripts</a></div>
+</div></section>
 <script>
 (() => {
   const search = document.getElementById('catalog-search');
@@ -171,6 +189,76 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
   }
   search.addEventListener('input', apply);
   sort.addEventListener('change', apply);
+
+  const tray = document.getElementById('comparison-tray');
+  const list = document.getElementById('comparison-list');
+  const live = document.getElementById('comparison-live');
+  const open = document.getElementById('comparison-open');
+  const addButtons = Array.from(document.querySelectorAll('.compare-add'));
+  const byDir = new Map(addButtons.map((button) => [button.dataset.compareDir, button]));
+  let selected = new URLSearchParams(window.location.search).getAll('doc').filter((dir, i, all) => byDir.has(dir) && all.indexOf(dir) === i).slice(0, 4);
+
+  function selectionURL(base) {
+    const params = new URLSearchParams();
+    for (const dir of selected) params.append('doc', dir);
+    const query = params.toString();
+    return base + (query ? '?' + query : '');
+  }
+  function announce(message) { live.textContent = message; }
+  function renderSelection(message) {
+    tray.hidden = selected.length === 0;
+    document.body.classList.toggle('compare-active', selected.length !== 0);
+    list.replaceChildren();
+    selected.forEach((dir, index) => {
+      const source = byDir.get(dir);
+      const row = document.createElement('li');
+      const title = document.createElement('span');
+      title.className = 'compare-title';
+      title.textContent = source.dataset.compareTitle;
+      const actions = document.createElement('span');
+      actions.className = 'compare-item-actions';
+      const action = (label, disabled, fn) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.textContent = label; button.disabled = disabled;
+        button.setAttribute('aria-label', label + ' ' + source.dataset.compareTitle);
+        button.addEventListener('click', fn); actions.appendChild(button);
+      };
+      action('Earlier', index === 0, () => { [selected[index - 1], selected[index]] = [selected[index], selected[index - 1]]; renderSelection('Moved ' + source.dataset.compareTitle + ' earlier.'); });
+      action('Later', index === selected.length - 1, () => { [selected[index], selected[index + 1]] = [selected[index + 1], selected[index]]; renderSelection('Moved ' + source.dataset.compareTitle + ' later.'); });
+      action('Remove', false, () => { selected.splice(index, 1); renderSelection('Removed ' + source.dataset.compareTitle + '.'); });
+      row.append(title, actions); list.appendChild(row);
+    });
+    for (const button of addButtons) {
+      const active = selected.includes(button.dataset.compareDir);
+      button.setAttribute('aria-pressed', String(active));
+      button.textContent = active ? 'Remove from comparison' : 'Add to comparison';
+    }
+    const ready = selected.length >= 2;
+    open.setAttribute('aria-disabled', String(!ready));
+    open.tabIndex = ready ? 0 : -1;
+    open.href = selectionURL('` + compareRoute + `');
+    history.replaceState(null, '', selectionURL('/'));
+    if (message) announce(message);
+    else if (!ready) announce('Select ' + (2 - selected.length) + ' more manuscript' + (selected.length === 0 ? 's' : '') + '.');
+    else announce(selected.length + ' manuscripts selected.');
+  }
+  for (const button of addButtons) button.addEventListener('click', () => {
+    const dir = button.dataset.compareDir;
+    const index = selected.indexOf(dir);
+    if (index >= 0) {
+      selected.splice(index, 1);
+      renderSelection('Removed ' + button.dataset.compareTitle + '.');
+      return;
+    }
+    if (selected.length === 4) {
+      announce('Comparison is limited to four manuscripts. Remove one before adding another.');
+      return;
+    }
+    selected.push(dir);
+    renderSelection('Added ' + button.dataset.compareTitle + '.');
+  });
+  open.addEventListener('click', (event) => { if (selected.length < 2) event.preventDefault(); });
+  renderSelection();
 })();
 </script>
 </body>

@@ -91,6 +91,10 @@ func (s *Server) Handler() http.Handler {
 			s.handleCatalogRefresh(w, r)
 			return
 		}
+		if clean == strings.TrimSuffix(compareRoute, "/") {
+			s.serveComparison(w, r)
+			return
+		}
 		// The persistent catalogue is application state, not a static asset.
 		if clean == "/"+catalogDirName || strings.HasPrefix(clean, "/"+catalogDirName+"/") {
 			http.NotFound(w, r)

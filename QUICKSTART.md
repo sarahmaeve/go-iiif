@@ -201,6 +201,12 @@ request-relative, so the library works no matter where it lives.
 
 ## Next steps
 
+- **Compare manuscripts** — use **Add to comparison** on two to four catalogue
+  entries, reorder them in the bottom tray, then open **Compare manuscripts**.
+  The resulting local URL is bookmarkable. Each Mirador window remains
+  independent, and annotations are read from and saved to the bundle that owns
+  the active canvas.
+
 - **A whole institution, filtered** — crawl a IIIF Collection instead of
   one manifest:
   ```sh

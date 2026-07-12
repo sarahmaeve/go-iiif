@@ -61,3 +61,20 @@ export default class HttpAnnotationAdapter {
     return { id: this.annotationPageId, type: 'AnnotationPage', items: [] };
   }
 }
+
+// A strict-routing comparison must never guess an annotation endpoint. This
+// adapter satisfies MAE's storage contract for an unowned canvas while doing
+// no I/O: reads are empty and mutations fail closed in memory.
+export class ReadOnlyAnnotationAdapter {
+  constructor(canvasId) {
+    this.canvasId = canvasId;
+    this.annotationPageId = `urn:iiifpreserve:unowned-canvas:${encodeURIComponent(canvasId)}`;
+  }
+
+  getStorageAdapterUser() { return 'Anonymous'; }
+  async all() { return { id: this.annotationPageId, type: 'AnnotationPage', items: [] }; }
+  async create() { throw new Error('Annotation canvas has no local owner'); }
+  async update() { throw new Error('Annotation canvas has no local owner'); }
+  async delete() { throw new Error('Annotation canvas has no local owner'); }
+  async get() { return null; }
+}
