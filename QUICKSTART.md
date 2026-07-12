@@ -205,7 +205,11 @@ request-relative, so the library works no matter where it lives.
   entries, reorder them in the bottom tray, then open **Compare manuscripts**.
   The resulting local URL is bookmarkable. Each Mirador window remains
   independent, and annotations are read from and saved to the bundle that owns
-  the active canvas.
+  the active canvas. Optional **Pair page position** and **Sync zoom and pan**
+  controls remain off until explicitly enabled. The workspace URL tracks
+  current canvases and sync choices; name and save useful workspaces to reopen
+  them from the catalogue. Saved comparisons are included in researcher
+  metadata export/import.
 
 - **A whole institution, filtered** — crawl a IIIF Collection instead of
   one manifest:

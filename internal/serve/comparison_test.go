@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,27 @@ import (
 	"strings"
 	"testing"
 )
+
+func copyComparisonFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, slug := range []string{"cookbook-v3", "bodleian-c481"} {
+		dst := filepath.Join(root, slug)
+		if err := os.MkdirAll(dst, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"manifest.json", "provenance.json"} {
+			b, err := os.ReadFile(filepath.Join("testdata", "bundle", slug, name)) //nolint:gosec // fixed fixture
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dst, name), b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return root
+}
 
 func comparisonPath(docs ...string) string {
 	q := url.Values{"doc": docs}
@@ -132,26 +154,122 @@ func TestServerComparisonUsesOrderedLocalManifestsAndCanvasRoutes(t *testing.T) 
 	}
 }
 
-func TestComparisonCanvasRoutesKeepAnnotationsInOwningBundle(t *testing.T) {
-	root := filepath.Join("testdata", "bundle")
-	// Work on a copy because this test deliberately creates annotation files.
-	writable := t.TempDir()
-	for _, slug := range []string{"cookbook-v3", "bodleian-c481"} {
-		src := filepath.Join(root, slug)
-		dst := filepath.Join(writable, slug)
-		if err := os.MkdirAll(dst, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		for _, name := range []string{"manifest.json", "provenance.json"} {
-			b, err := os.ReadFile(filepath.Join(src, name)) //nolint:gosec // fixed test fixture
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(dst, name), b, 0o600); err != nil {
-				t.Fatal(err)
-			}
+func TestComparisonDeepLinksValidateCanvasOwnershipAndSyncModes(t *testing.T) {
+	srv := New(filepath.Join("testdata", "bundle"))
+	const cookbookCanvas = "https://iiif.io/api/cookbook/recipe/0032-collection/manifest/1/canvas/p1"
+	const bodleianCanvas = "https://iiif.bodleian.ox.ac.uk/iiif/canvas/c85d87de-abd9-43b1-abf4-c65a814dc0a8.json"
+	query := comparisonQuery([]string{"cookbook-v3", "bodleian-c481"}, []string{cookbookCanvas, bodleianCanvas}, true, true)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, compareRoute+"?"+query.Encode(), nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deep comparison = %d %q", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{`"canvas":"` + cookbookCanvas + `"`, `"canvas":"` + bodleianCanvas + `"`, `id="sync-page" type="checkbox" checked`, `id="sync-view" type="checkbox" checked`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("deep comparison lacks %q", want)
 		}
 	}
+
+	bad := []string{
+		comparisonPath("cookbook-v3", "bodleian-c481") + "&canvas=" + url.QueryEscape(bodleianCanvas),
+		comparisonPath("cookbook-v3", "bodleian-c481") + "&sync=unknown",
+		comparisonPath("cookbook-v3", "bodleian-c481") + "&canvas=&canvas=&canvas=extra",
+	}
+	for _, requestPath := range bad {
+		rec = httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestPath, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid deep link %s = %d %q", requestPath, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSavedComparisonPersistsListsAndDeletes(t *testing.T) {
+	root := copyComparisonFixture(t)
+	srv := New(root)
+	const canvas = "https://iiif.io/api/cookbook/recipe/0032-collection/manifest/1/canvas/p1"
+	form := url.Values{
+		"name": {"Hands and currents"}, "doc": {"cookbook-v3", "bodleian-c481"},
+		"canvas": {canvas, ""}, "sync": {"page", "view"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, compareSaveRoute, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "saved=1") {
+		t.Fatalf("save = %d Location=%q body=%q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	sets := newComparisonStore(root).list()
+	if len(sets) != 1 || sets[0].Name != "Hands and currents" || !sets[0].SyncPage || !sets[0].SyncView || sets[0].Canvases[0] != canvas {
+		t.Fatalf("saved sets = %+v", sets)
+	}
+	reopened := New(root)
+	rec = httptest.NewRecorder()
+	reopened.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	for _, want := range []string{"Saved comparisons", "Hands and currents", "canvas=", "sync=page", "sync=view"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("catalogue lacks saved comparison %q: %s", want, rec.Body.String())
+		}
+	}
+
+	deleteForm := url.Values{"id": {sets[0].ID}}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, compareDeleteRoute, strings.NewReader(deleteForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reopened.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || len(newComparisonStore(root).list()) != 0 {
+		t.Fatalf("delete = %d sets=%v", rec.Code, newComparisonStore(root).list())
+	}
+}
+
+func TestSavedComparisonDoesNotOverwriteCorruptState(t *testing.T) {
+	root := copyComparisonFixture(t)
+	stateDir := filepath.Join(root, catalogDirName)
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(stateDir, comparisonFileName)
+	const corrupt = `{not recoverable`
+	if err := os.WriteFile(statePath, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := newComparisonStore(root)
+	if _, err := store.add(savedComparison{Name: "Must not save", Docs: []string{"cookbook-v3", "bodleian-c481"}}); err == nil {
+		t.Fatal("corrupt comparison state allowed a write")
+	}
+	b, err := os.ReadFile(statePath)
+	if err != nil || string(b) != corrupt {
+		t.Fatalf("corrupt comparison state changed: %q, %v", b, err)
+	}
+}
+
+func TestSavedComparisonNamesAreUnique(t *testing.T) {
+	store := newComparisonStore(t.TempDir())
+	set := savedComparison{Name: "Related hands", Docs: []string{"a", "b"}}
+	if _, err := store.add(set); err != nil {
+		t.Fatal(err)
+	}
+	set.Name = " related HANDS "
+	if _, err := store.add(set); !errors.Is(err, ErrComparisonNameExists) {
+		t.Fatalf("duplicate-name error = %v", err)
+	}
+}
+
+func TestComparisonTemplateUsesPublicSyncSurfaces(t *testing.T) {
+	rec := httptest.NewRecorder()
+	New(filepath.Join("testdata", "bundle")).Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, comparisonPath("cookbook-v3", "bodleian-c481"), nil))
+	for _, want := range []string{
+		"Mirador.getWindows", "Mirador.setCanvas", "Mirador.OSDReferences", "getHomeBounds", "normalized.width", "Pair page position", "Sync zoom and pan", "history.replaceState",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("comparison synchronization lacks %q", want)
+		}
+	}
+}
+
+func TestComparisonCanvasRoutesKeepAnnotationsInOwningBundle(t *testing.T) {
+	writable := copyComparisonFixture(t)
 	srv := New(writable)
 	items, endpoints, err := srv.comparisonSelection([]string{"cookbook-v3", "bodleian-c481"})
 	if err != nil || len(items) != 2 || len(endpoints) != 2 {

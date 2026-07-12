@@ -1,6 +1,6 @@
 # Manuscript comparison workspace
 
-Status: Slices 1–2 implemented; Slice 3 proposed; Slice 4 deferred pending research use
+Status: Slices 1–4 implemented
 
 ## Purpose
 
@@ -50,9 +50,13 @@ The page provides:
 - a clear small-screen message, followed by a usable stacked layout; and
 - the normal offline indication.
 
-The first release does not synchronize page turns, zoom, or pan. Manuscripts
-rarely have page-for-page alignment, and implicit synchronization would be
-surprising. Those behaviors can be explicit follow-up tools.
+Synchronization is always explicit and independently toggleable. **Pair page
+position** maps the active canvas's zero-based position to the same position in
+the other manuscripts, leaving a shorter manuscript unchanged when it has no
+corresponding canvas. **Sync zoom and pan** maps the visible rectangle relative
+to each image's home bounds, so different pixel dimensions compare the same
+relative region. Rotation and flip follow the active window as part of that
+mode. Both controls default off because manuscripts rarely align perfectly.
 
 ## URL and server contract
 
@@ -61,6 +65,12 @@ Use a GET-only route with repeated query parameters:
 ```text
 /__compare__/?doc=iiif.bodleian.ox.ac.uk/a&doc=gallica.bnf.fr/b
 ```
+
+Optional repeated `canvas` values are positional companions to `doc` and must
+belong to their corresponding local manifests. Repeated `sync=page` and
+`sync=view` values restore explicit synchronization choices. Current canvases
+and modes are maintained with `history.replaceState`, so copying or
+bookmarking the URL deep-links the live workspace.
 
 `doc` values are catalogue bundle slugs, not filesystem paths or arbitrary
 manifest URLs. The handler resolves every value through the in-memory
@@ -137,12 +147,18 @@ strict canvas ownership would have been an unsafe intermediate release.
 
 ### State and persistence
 
-The MVP adds no persistent schema. Selection is represented by the comparison
-URL. Catalogue metadata and annotations continue using their existing files.
+Selection and current canvases are represented by the comparison URL. Named
+workspaces use a separate versioned, atomically replaced
+`.iiifpreserve/comparisons.json`; the catalogue schema remains unchanged. A
+saved set contains its name, ordered bundle slugs, initial canvases, and sync
+modes. Names are unique case-insensitively and the store is capped at 100 sets.
 
-A later saved-workspace feature could add named comparison sets to researcher
-metadata export/import. That should be a separate schema decision rather than
-silently expanding catalogue entries now.
+Research metadata archives include saved comparisons as manifest URLs plus
+bundle-slug fallbacks. Import resolves manifest URLs against the receiving
+library, so a workspace survives a different local directory layout. Import
+is non-destructive: exact named matches are duplicates and conflicting named
+sets retain the local value with a warning. Dry-run previews never write the
+comparison file.
 
 ## Accessibility and keyboard behavior
 
@@ -178,6 +194,12 @@ silently expanding catalogue entries now.
    canvas; a missing mapping cannot write to another bundle.
 7. The catalogue selection flow works with mouse and keyboard and has a
    comprehensible narrow-screen fallback.
+8. Initial canvases and sync modes survive copying, bookmarking, and saving a
+   workspace; a canvas from the wrong manuscript is rejected.
+9. Page pairing and viewport synchronization operate only when explicitly
+   enabled and can be disabled independently.
+10. Saved workspaces survive restart and metadata export/import without
+    overwriting a same-named local workspace.
 
 ## Test plan
 
@@ -198,6 +220,7 @@ silently expanding catalogue entries now.
    comparison route, and multi-window workspace.
 2. **Implemented with Slice 1:** correct strict per-canvas annotation routing
    and annotation editing.
-3. Optional deep links to initial canvases and named saved comparison sets.
-4. Only after research use demonstrates a need: explicit synchronized zoom,
-   pan, or page pairing.
+3. **Implemented:** deep links to initial canvases and named saved comparison
+   sets with portable research-metadata exchange.
+4. **Implemented:** explicit, opt-in page-position pairing and normalized
+   viewport/rotation/flip synchronization.

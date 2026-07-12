@@ -47,6 +47,8 @@ const (
 	catalogEditRoute    = "/__catalog__/edit"
 	catalogRefreshRoute = "/__catalog__/refresh"
 	compareRoute        = "/__compare__/"
+	compareSaveRoute    = "/__compare__/save"
+	compareDeleteRoute  = "/__compare__/delete"
 )
 
 // indexTmpl is the landing page: a researcher with no external viewer lands
@@ -89,6 +91,10 @@ h1{font-family:"Newsreader",Georgia,serif;font-weight:700;font-size:1.944rem;lin
  font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .catalogue-tools input,.catalogue-tools select{width:100%;border:1px solid var(--border);background:var(--surface);color:var(--text);
  padding:8px 10px;font:400 .9rem "Source Serif 4",Georgia,serif;text-transform:none;letter-spacing:normal}
+.saved-comparisons{margin:24px 0 4px;padding:14px 16px;background:var(--surface);border:1px solid var(--border)}
+.saved-comparisons h2{margin:0 0 8px;font:600 1.1rem "Newsreader",Georgia,serif}.saved-comparisons ul{list-style:none;margin:0;padding:0;display:grid;gap:5px}
+.saved-comparisons li{display:flex;justify-content:space-between;align-items:baseline;gap:12px}.saved-comparisons a{color:var(--primary);text-decoration:none;border-bottom:1px solid var(--border)}.saved-comparisons a:hover{color:var(--accent)}
+.saved-comparisons form{display:inline}.saved-comparisons button{border:0;background:transparent;color:var(--muted);cursor:pointer;font:600 .62rem "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.saved-comparisons button:hover{color:var(--accent)}
 .entry{padding:24px 0;border-bottom:1px solid var(--border)}
 .entry .title{font-family:"Newsreader",Georgia,serif;font-weight:600;font-size:1.62rem;line-height:1.15;
  color:var(--primary);text-decoration:none;display:inline-block}
@@ -129,14 +135,15 @@ body.compare-active .page{padding-bottom:22rem}
 <p class="kicker">Preserved Archive</p>
 <h1>Preserved IIIF Manifests</h1>
 <hr class="rule"><hr class="rule dbl">
-<div class="catalogue-bar"><p class="count">{{len .}} manuscript(s) · offline · deep-zoomable</p>
+{{if .Comparisons}}<section class="saved-comparisons"><h2>Saved comparisons</h2><ul>{{range .Comparisons}}<li><a href="{{.Href}}">{{.Name}}</a><form method="post" action="` + compareDeleteRoute + `"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" aria-label="Delete saved comparison {{.Name}}">Delete</button></form></li>{{end}}</ul></section>{{end}}
+<div class="catalogue-bar"><p class="count">{{len .Docs}} manuscript(s) · offline · deep-zoomable</p>
 <form class="refresh" method="post" action="` + catalogRefreshRoute + `"><button type="submit">Refresh library</button></form></div>
 <div class="catalogue-tools">
 <label>Search library<input id="catalog-search" type="search" placeholder="Title, institution, language, notes, or tags"></label>
 <label>Sort by<select id="catalog-sort"><option value="archive">Archive path</option><option value="title">Title</option><option value="institution">Institution</option><option value="pages">Page count</option></select></label>
 </div>
 <section id="catalog-entries">
-{{range .}}<article class="entry" data-dir="{{.Dir}}" data-title="{{.Title}}" data-institution="{{.Institution}}" data-pages="{{.Pages}}" data-search="{{.SourceTitle}} {{.Title}} {{.Institution}} {{.Languages}} {{.Notes}} {{.Tags}}">
+{{range .Docs}}<article class="entry" data-dir="{{.Dir}}" data-title="{{.Title}}" data-institution="{{.Institution}}" data-pages="{{.Pages}}" data-search="{{.SourceTitle}} {{.Title}} {{.Institution}} {{.Languages}} {{.Notes}} {{.Tags}}">
 <a class="title" href="/{{.Dir}}/">{{.Title}}</a>
 <p class="meta"><a href="{{.RecordURL}}" rel="noopener noreferrer">{{.Institution}}</a><span class="sep">·</span>{{.Languages}}<span class="sep">·</span>{{.Pages}} pp<span class="sep">·</span>{{.Size}}</p>
 {{if .Notes}}<p class="notes">{{.Notes}}</p>{{end}}
@@ -441,9 +448,16 @@ func (ms *manifestSummary) finishDisplayFields() {
 
 // serveIndex writes the landing page: a row per preserved manifest with
 // enough info to choose one without opening it.
+type indexPage struct {
+	Docs        []manifestSummary
+	Comparisons []savedComparisonSummary
+}
+
 func (s *Server) serveIndex(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = indexTmpl.Execute(w, s.manifestSummaries()) //nolint:errcheck // best-effort response write; client disconnect is not actionable
+	_ = indexTmpl.Execute(w, indexPage{ //nolint:errcheck // best-effort response write; client disconnect is not actionable
+		Docs: s.manifestSummaries(), Comparisons: comparisonSummaries(s.comparisons.list()),
+	})
 }
 
 // viewerPage is the viewer template's data: the manuscript being viewed

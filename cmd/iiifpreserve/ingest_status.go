@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -114,23 +115,29 @@ func countCompletedURLs(path string) (int, error) {
 }
 
 func findIncompleteBundles(root string) ([]string, error) {
+	cleanRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolving library root: %w", err)
+	}
+	// Walk an fs.FS rooted at the configured library instead of passing an
+	// operator-controlled path through every callback. WalkDir paths are now
+	// slash-separated, relative names that cannot escape cleanRoot, and symlink
+	// directories are not followed.
+	rootFS := os.DirFS(cleanRoot)
 	var incomplete []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(rootFS, ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() && path == filepath.Join(root, ".iiifpreserve") {
+		if entry.IsDir() && name == ".iiifpreserve" {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() || entry.Name() != "manifest.json" {
 			return nil
 		}
-		if _, err := os.Stat(filepath.Join(filepath.Dir(path), "provenance.json")); errors.Is(err, os.ErrNotExist) {
-			rel, relErr := filepath.Rel(root, filepath.Dir(path))
-			if relErr != nil {
-				return relErr
-			}
-			incomplete = append(incomplete, filepath.ToSlash(rel))
+		bundleDir := path.Dir(name)
+		if _, err := fs.Stat(rootFS, path.Join(bundleDir, "provenance.json")); errors.Is(err, os.ErrNotExist) {
+			incomplete = append(incomplete, bundleDir)
 		} else if err != nil {
 			return err
 		}

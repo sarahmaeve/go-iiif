@@ -29,6 +29,7 @@ type Server struct {
 	root                  string
 	server                *http.Server
 	catalog               *catalog
+	comparisons           *comparisonStore
 	annotationLocks       keyedMutexes
 	manifestCache         manifestCache
 	enforceLocalMutations bool
@@ -42,9 +43,12 @@ type Server struct {
 // one line per request to stderr.
 func New(root string) *Server {
 	lg := log.New(os.Stderr, "iiifserve ", log.LstdFlags)
-	s := &Server{root: root, catalog: newCatalog(root), logf: lg.Printf}
+	s := &Server{root: root, catalog: newCatalog(root), comparisons: newComparisonStore(root), logf: lg.Printf}
 	if s.catalog.loadErr != nil {
 		lg.Printf("%v; preserving the file unchanged and disabling catalogue edits", s.catalog.loadErr)
+	}
+	if s.comparisons.loadErr != nil {
+		lg.Printf("%v; preserving the file unchanged and disabling saved-comparison edits", s.comparisons.loadErr)
 	}
 	return s
 }
@@ -93,6 +97,14 @@ func (s *Server) Handler() http.Handler {
 		}
 		if clean == strings.TrimSuffix(compareRoute, "/") {
 			s.serveComparison(w, r)
+			return
+		}
+		if clean == compareSaveRoute {
+			s.handleComparisonSave(w, r)
+			return
+		}
+		if clean == compareDeleteRoute {
+			s.handleComparisonDelete(w, r)
 			return
 		}
 		// The persistent catalogue is application state, not a static asset.

@@ -2,6 +2,7 @@ package serve
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -18,9 +20,11 @@ const (
 )
 
 type comparisonItem struct {
-	Dir      string `json:"dir"`
-	Title    string `json:"title"`
-	Manifest string `json:"manifest"`
+	Dir      string   `json:"dir"`
+	Title    string   `json:"title"`
+	Manifest string   `json:"manifest"`
+	Canvas   string   `json:"canvas,omitempty"`
+	Canvases []string `json:"canvases,omitempty"`
 }
 
 type comparisonPage struct {
@@ -28,6 +32,9 @@ type comparisonPage struct {
 	ItemsJSON       template.JS
 	EndpointsJSON   template.JS
 	ChangeSelection string
+	SyncPage        bool
+	SyncView        bool
+	Saved           bool
 }
 
 var comparisonTmpl = template.Must(template.New("comparison").Parse(`<!doctype html>
@@ -46,9 +53,12 @@ body{display:flex;flex-direction:column;overflow:hidden;background:var(--bg);col
 .actions{display:flex;gap:14px;align-items:center}.actions a,.actions button{border:0;border-bottom:1px solid var(--border);padding:0;background:transparent;color:var(--muted);cursor:pointer;text-decoration:none;font:600 .66rem "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.actions a:hover,.actions button:hover{color:var(--accent);border-color:var(--accent)}
 h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--primary)}
 .titles{margin:5px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 16px;list-style:none;color:var(--muted);font-size:.88rem}.titles li:before{content:"◆";padding-right:6px;color:var(--accent);font-size:.55rem}
+.workspace-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;margin-top:8px;font:600 .64rem "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.workspace-tools label{display:flex;align-items:center;gap:6px}.workspace-tools input[type=checkbox]{accent-color:var(--accent)}
+.save-comparison{display:flex;align-items:center;gap:6px;margin-left:auto}.save-comparison input[type=text]{width:13rem;border:1px solid var(--border);background:var(--surface);padding:5px 7px;color:var(--text);font:400 .78rem "Source Serif 4",Georgia,serif;text-transform:none;letter-spacing:normal}.save-comparison button{border:0;background:var(--primary);color:white;padding:6px 9px;cursor:pointer;font:600 .62rem "IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.07em}.saved-note{color:var(--accent)}
 .notice{display:none;margin:0;padding:7px 20px;background:var(--surface);border-bottom:1px solid var(--border);color:var(--muted);font-size:.85rem}
 #mirador{flex:1;min-height:0;position:relative;overflow:hidden}.copy-status{position:absolute;left:-9999px}
-@media(max-width:48rem){.top{align-items:flex-start;flex-direction:column}.actions{flex-wrap:wrap}.notice{display:block}.masthead{padding-bottom:9px}
+@media(max-width:48rem){.top{align-items:flex-start;flex-direction:column}.actions,.workspace-tools{align-items:flex-start;flex-direction:column}.save-comparison{margin-left:0;flex-wrap:wrap}.notice{display:block}.masthead{padding-bottom:9px}
  #mirador .mosaic-root{overflow-y:auto!important;display:block!important}
  #mirador .mosaic-tile{position:relative!important;inset:auto!important;width:100%!important;height:70vh!important;min-height:28rem;margin:0 0 6px!important}
  #mirador .mosaic-split{display:none!important}}
@@ -58,6 +68,16 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
 <div class="top"><p class="kicker">Preserved archive · offline comparison</p><nav class="actions" aria-label="Comparison actions"><a href="/">&larr; Catalogue</a><a href="{{.ChangeSelection}}">Change selection</a><button id="copy-comparison" type="button">Copy comparison link</button></nav></div>
 <h1 id="comparison-heading" tabindex="-1">Compare manuscripts</h1>
 <ul class="titles">{{range .Items}}<li>{{.Title}}</li>{{end}}</ul>
+<div class="workspace-tools" aria-label="Comparison synchronization and saving">
+<label><input id="sync-page" type="checkbox"{{if .SyncPage}} checked{{end}}> Pair page position</label>
+<label><input id="sync-view" type="checkbox"{{if .SyncView}} checked{{end}}> Sync zoom and pan</label>
+<form class="save-comparison" method="post" action="` + compareSaveRoute + `">
+<label for="comparison-name">Save as</label><input id="comparison-name" name="name" type="text" maxlength="200" required placeholder="Comparison name">
+{{range .Items}}<input type="hidden" name="doc" value="{{.Dir}}"><input class="saved-canvas" type="hidden" name="canvas" value="{{.Canvas}}">{{end}}
+<input id="saved-sync-page" type="hidden" name="sync" value="page"{{if not .SyncPage}} disabled{{end}}><input id="saved-sync-view" type="hidden" name="sync" value="view"{{if not .SyncView}} disabled{{end}}>
+<button type="submit">Save workspace</button>{{if .Saved}}<span class="saved-note" role="status">Saved</span>{{end}}
+</form>
+</div>
 </header>
 <p class="notice">On a narrow screen the manuscript windows stack; a wider display is more comfortable for visual comparison.</p>
 <div id="mirador"></div>
@@ -69,7 +89,7 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
 (() => {
   const items = JSON.parse(document.getElementById('comparison-items').textContent);
   const annotationEndpointByCanvas = JSON.parse(document.getElementById('annotation-endpoints').textContent);
-  Mirador.viewer({
+  const mirador = Mirador.viewer({
     id: 'mirador',
     osdConfig: { preserveViewport: false },
     annotation: { endpointByCanvas: annotationEndpointByCanvas, strictRouting: true },
@@ -81,9 +101,108 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
       highlightAllAnnotations: true
     },
     workspace: { type: 'mosaic' },
-    windows: items.map((item) => ({ manifestId: item.manifest }))
+    windows: items.map((item) => ({ manifestId: item.manifest, ...(item.canvas ? { canvasId: item.canvas } : {}) }))
   });
-  const status = document.getElementById('copy-status');
+  const syncPage = document.getElementById('sync-page');
+  const syncView = document.getElementById('sync-view');
+  const savedCanvases = Array.from(document.querySelectorAll('.saved-canvas'));
+  const savedSyncPage = document.getElementById('saved-sync-page');
+  const savedSyncView = document.getElementById('saved-sync-view');
+  const live = document.getElementById('copy-status');
+  const windowsForItems = () => {
+    const windows = Object.values(Mirador.getWindows(mirador.store.getState()));
+    return items.map((item) => windows.find((win) => win.manifestId === item.manifest));
+  };
+  function writeWorkspaceURL(windows = windowsForItems()) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('saved');
+    url.searchParams.delete('canvas');
+    const canvases = windows.map((win) => (win && win.canvasId) || '');
+    let last = canvases.length - 1;
+    while (last >= 0 && canvases[last] === '') last--;
+    canvases.slice(0, last + 1).forEach((canvas) => url.searchParams.append('canvas', canvas));
+    url.searchParams.delete('sync');
+    if (syncPage.checked) url.searchParams.append('sync', 'page');
+    if (syncView.checked) url.searchParams.append('sync', 'view');
+    history.replaceState(null, '', url);
+    savedCanvases.forEach((input, i) => { input.value = canvases[i] || ''; });
+    savedSyncPage.disabled = !syncPage.checked;
+    savedSyncView.disabled = !syncView.checked;
+  }
+  let syncingPage = false;
+  const previousCanvas = new Map();
+  mirador.store.subscribe(() => {
+    const windows = windowsForItems();
+    if (syncPage.checked && !syncingPage) {
+      const changed = windows.find((win) => win && previousCanvas.has(win.id) && previousCanvas.get(win.id) !== win.canvasId);
+      if (changed) {
+        const sourceIndex = windows.indexOf(changed);
+        const pageIndex = items[sourceIndex].canvases.indexOf(changed.canvasId);
+        if (pageIndex >= 0) {
+          syncingPage = true;
+          windows.forEach((win, i) => {
+            const target = items[i].canvases[pageIndex];
+            if (win && i !== sourceIndex && target && win.canvasId !== target) mirador.store.dispatch(Mirador.setCanvas(win.id, target));
+          });
+          syncingPage = false;
+        }
+      }
+    }
+    windows.forEach((win) => { if (win) previousCanvas.set(win.id, win.canvasId); });
+    writeWorkspaceURL(windows);
+  });
+
+  const attachedViewers = new Set();
+  const suppressViewUntil = new Map();
+  function attachViewportSync() {
+    const windows = windowsForItems();
+    windows.forEach((win) => {
+      if (!win || attachedViewers.has(win.id)) return;
+      const osd = Mirador.OSDReferences.get(win.id)?.current;
+      if (!osd) return;
+      attachedViewers.add(win.id);
+      osd.addHandler('animation-finish', () => {
+        const now = performance.now();
+        if (now < (suppressViewUntil.get(win.id) || 0)) {
+          suppressViewUntil.delete(win.id);
+          return;
+        }
+        if (!syncView.checked) return;
+        const home = osd.viewport.getHomeBounds();
+        const bounds = osd.viewport.getBounds(true);
+        if (!home || !home.width || !home.height) return;
+        const normalized = {
+          x: (bounds.x - home.x) / home.width,
+          y: (bounds.y - home.y) / home.height,
+          width: bounds.width / home.width,
+          height: bounds.height / home.height,
+        };
+        windowsForItems().forEach((targetWindow) => {
+          if (!targetWindow || targetWindow.id === win.id) return;
+          const target = Mirador.OSDReferences.get(targetWindow.id)?.current;
+          if (!target) return;
+          const targetHome = target.viewport.getHomeBounds();
+          if (!targetHome || !targetHome.width || !targetHome.height) return;
+          suppressViewUntil.set(targetWindow.id, performance.now() + 1500);
+          const Rect = targetHome.constructor;
+          target.viewport.fitBounds(new Rect(
+            targetHome.x + normalized.x * targetHome.width,
+            targetHome.y + normalized.y * targetHome.height,
+            normalized.width * targetHome.width,
+            normalized.height * targetHome.height,
+          ), false);
+          target.viewport.setRotation(osd.viewport.getRotation());
+          target.viewport.setFlip(osd.viewport.getFlip());
+        });
+      });
+    });
+    if (attachedViewers.size < items.length) window.setTimeout(attachViewportSync, 250);
+  }
+  attachViewportSync();
+  syncPage.addEventListener('change', () => { writeWorkspaceURL(); live.textContent = syncPage.checked ? 'Page pairing enabled.' : 'Page pairing disabled.'; });
+  syncView.addEventListener('change', () => { writeWorkspaceURL(); live.textContent = syncView.checked ? 'Zoom and pan synchronization enabled.' : 'Zoom and pan synchronization disabled.'; });
+  writeWorkspaceURL();
+  const status = live;
   document.getElementById('copy-comparison').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
@@ -109,8 +228,19 @@ func safeComparisonSlug(slug string) bool {
 }
 
 func (s *Server) comparisonSelection(raw []string) ([]comparisonItem, map[string]string, error) {
+	return s.comparisonSelectionWithCanvases(raw, nil)
+}
+
+func (s *Server) comparisonSelectionWithCanvases(raw, requestedCanvases []string) ([]comparisonItem, map[string]string, error) {
 	if len(raw) < minComparisonDocs || len(raw) > maxComparisonDocs {
 		return nil, nil, fmt.Errorf("select between %d and %d manuscripts", minComparisonDocs, maxComparisonDocs)
+	}
+	if len(requestedCanvases) > len(raw) {
+		return nil, nil, errors.New("more initial canvases than manuscripts")
+	}
+	canvases := append([]string(nil), requestedCanvases...)
+	for len(canvases) < len(raw) {
+		canvases = append(canvases, "")
 	}
 	seen := make(map[string]bool, len(raw))
 	canvasOwner := make(map[string]string)
@@ -138,13 +268,18 @@ func (s *Server) comparisonSelection(raw []string) ([]comparisonItem, map[string
 			manifest = nil
 		}
 		endpoint := "/" + slug + "/annotations"
-		for _, canvasID := range manifestCanvasIDs(manifest) {
+		manifestCanvases := manifestCanvasIDs(manifest)
+		for _, canvasID := range manifestCanvases {
 			if previous, exists := canvasOwner[canvasID]; exists && previous != endpoint {
 				return nil, nil, fmt.Errorf("canvas %q belongs to more than one selected manuscript", canvasID)
 			}
 			canvasOwner[canvasID] = endpoint
 		}
-		items = append(items, comparisonItem{Dir: slug, Title: summary.Title, Manifest: "/" + slug + "/manifest.json"})
+		initialCanvas := canvases[len(items)]
+		if initialCanvas != "" && !slices.Contains(manifestCanvases, initialCanvas) {
+			return nil, nil, fmt.Errorf("canvas %q does not belong to manuscript %q", initialCanvas, slug)
+		}
+		items = append(items, comparisonItem{Dir: slug, Title: summary.Title, Manifest: "/" + slug + "/manifest.json", Canvas: initialCanvas, Canvases: manifestCanvases})
 	}
 	return items, canvasOwner, nil
 }
@@ -205,7 +340,8 @@ func (s *Server) serveComparison(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	docs := r.URL.Query()["doc"]
-	items, endpoints, err := s.comparisonSelection(docs)
+	canvases := r.URL.Query()["canvas"]
+	items, endpoints, err := s.comparisonSelectionWithCanvases(docs, canvases)
 	if err != nil {
 		http.Error(w, "invalid comparison: "+err.Error(), http.StatusBadRequest)
 		return
@@ -220,7 +356,12 @@ func (s *Server) serveComparison(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not encode annotation routes", http.StatusInternalServerError)
 		return
 	}
-	query := url.Values{"doc": docs}.Encode()
+	syncPage, syncView, err := parseComparisonSync(r.URL.Query()["sync"])
+	if err != nil {
+		http.Error(w, "invalid comparison: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	query := comparisonQuery(docs, nil, false, false).Encode()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = comparisonTmpl.Execute(w, comparisonPage{ //nolint:errcheck // best-effort response write
 		Items: items,
@@ -230,5 +371,39 @@ func (s *Server) serveComparison(w http.ResponseWriter, r *http.Request) {
 		ItemsJSON:       template.JS(itemsJSON),     //nolint:gosec // trusted encoding/json output
 		EndpointsJSON:   template.JS(endpointsJSON), //nolint:gosec // trusted encoding/json output
 		ChangeSelection: "/?" + query,
+		SyncPage:        syncPage,
+		SyncView:        syncView,
+		Saved:           r.URL.Query().Get("saved") == "1",
 	})
+}
+
+func parseComparisonSync(values []string) (page, view bool, err error) {
+	for _, value := range values {
+		switch value {
+		case "page":
+			page = true
+		case "view":
+			view = true
+		default:
+			return false, false, fmt.Errorf("unknown synchronization mode %q", value)
+		}
+	}
+	return page, view, nil
+}
+
+func comparisonQuery(docs, canvases []string, syncPage, syncView bool) url.Values {
+	query := url.Values{"doc": append([]string(nil), docs...)}
+	for len(canvases) > 0 && canvases[len(canvases)-1] == "" {
+		canvases = canvases[:len(canvases)-1]
+	}
+	if len(canvases) > 0 {
+		query["canvas"] = append([]string(nil), canvases...)
+	}
+	if syncPage {
+		query.Add("sync", "page")
+	}
+	if syncView {
+		query.Add("sync", "view")
+	}
+	return query
 }

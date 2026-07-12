@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,10 +21,24 @@ const (
 )
 
 type researchMetadataArchive struct {
-	Format     string                   `json:"format"`
-	Version    int                      `json:"version"`
-	ExportedAt time.Time                `json:"exported_at"`
-	Bundles    []researchMetadataBundle `json:"bundles"`
+	Format      string                   `json:"format"`
+	Version     int                      `json:"version"`
+	ExportedAt  time.Time                `json:"exported_at"`
+	Bundles     []researchMetadataBundle `json:"bundles"`
+	Comparisons []researchComparison     `json:"comparisons,omitempty"`
+}
+
+type researchComparison struct {
+	Name      string                       `json:"name"`
+	Documents []researchComparisonDocument `json:"documents"`
+	SyncPage  bool                         `json:"sync_page,omitempty"`
+	SyncView  bool                         `json:"sync_view,omitempty"`
+}
+
+type researchComparisonDocument struct {
+	ManifestURL string `json:"manifest_url,omitempty"`
+	BundleDir   string `json:"bundle_dir"`
+	CanvasID    string `json:"canvas_id,omitempty"`
 }
 
 type researchMetadataBundle struct {
@@ -41,12 +56,15 @@ type researchCatalogFields struct {
 
 // MetadataTransferReport describes an export or non-destructive import.
 type MetadataTransferReport struct {
-	Bundles          int
-	CatalogChanges   int
-	Annotations      int
-	AnnotationsAdded int
-	Duplicates       int
-	Warnings         []string
+	Bundles              int
+	CatalogChanges       int
+	Annotations          int
+	AnnotationsAdded     int
+	Duplicates           int
+	Comparisons          int
+	ComparisonsAdded     int
+	ComparisonDuplicates int
+	Warnings             []string
 }
 
 type MetadataImportOptions struct {
@@ -86,6 +104,29 @@ func ExportResearchMetadata(root string, w io.Writer) (MetadataTransferReport, e
 		report.Annotations += len(page.Items)
 	}
 	report.Bundles = len(archive.Bundles)
+	byDir := make(map[string]manifestSummary)
+	for _, entry := range c.list() {
+		byDir[entry.Dir] = entry
+	}
+	comparisonState := newComparisonStore(root)
+	if comparisonState.loadErr != nil {
+		return report, comparisonState.loadErr
+	}
+	for _, saved := range comparisonState.list() {
+		portable := researchComparison{Name: saved.Name, SyncPage: saved.SyncPage, SyncView: saved.SyncView}
+		for i, dir := range saved.Docs {
+			doc := researchComparisonDocument{BundleDir: dir}
+			if entry, ok := byDir[dir]; ok {
+				doc.ManifestURL = entry.RecordURL
+			}
+			if i < len(saved.Canvases) {
+				doc.CanvasID = saved.Canvases[i]
+			}
+			portable.Documents = append(portable.Documents, doc)
+		}
+		archive.Comparisons = append(archive.Comparisons, portable)
+	}
+	report.Comparisons = len(archive.Comparisons)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
@@ -185,7 +226,74 @@ func ImportResearchMetadataWithOptions(root string, r io.Reader, opts MetadataIm
 		}
 		mergeAnnotations(root, dir, incoming.Annotations, &report, opts.DryRun)
 	}
+	mergeComparisons(root, c, byURL, archive.Comparisons, &report, opts.DryRun)
 	return report, nil
+}
+
+func mergeComparisons(root string, c *catalog, byURL map[string]string, incoming []researchComparison, report *MetadataTransferReport, dryRun bool) {
+	store := newComparisonStore(root)
+	if store.loadErr != nil {
+		report.Warnings = append(report.Warnings, store.loadErr.Error())
+		return
+	}
+	existing := store.list()
+	for _, comparison := range incoming {
+		docs := make([]string, 0, len(comparison.Documents))
+		canvases := make([]string, 0, len(comparison.Documents))
+		valid := true
+		for _, document := range comparison.Documents {
+			dir, ok := byURL[document.ManifestURL]
+			if !ok {
+				dir = document.BundleDir
+				_, ok = c.get(dir)
+			}
+			if !ok {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("comparison %q: no local bundle for %s", comparison.Name, document.BundleDir))
+				valid = false
+				break
+			}
+			docs = append(docs, dir)
+			canvases = append(canvases, document.CanvasID)
+		}
+		if !valid {
+			continue
+		}
+		server := &Server{root: root, catalog: c}
+		if _, _, err := server.comparisonSelectionWithCanvases(docs, canvases); err != nil {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("comparison %q: %v", comparison.Name, err))
+			continue
+		}
+		candidate := savedComparison{Name: comparison.Name, Docs: docs, Canvases: canvases, SyncPage: comparison.SyncPage, SyncView: comparison.SyncView}
+		conflict := false
+		for _, local := range existing {
+			if !strings.EqualFold(local.Name, candidate.Name) {
+				continue
+			}
+			if slices.Equal(local.Docs, candidate.Docs) && slices.Equal(local.Canvases, candidate.Canvases) && local.SyncPage == candidate.SyncPage && local.SyncView == candidate.SyncView {
+				report.ComparisonDuplicates++
+			} else {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("comparison %q conflicts; kept local value", comparison.Name))
+			}
+			conflict = true
+			break
+		}
+		if conflict {
+			continue
+		}
+		report.Comparisons++
+		if dryRun {
+			report.ComparisonsAdded++
+			existing = append(existing, candidate)
+			continue
+		}
+		added, err := store.add(candidate)
+		if err != nil {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("comparison %q could not be saved: %v", comparison.Name, err))
+			continue
+		}
+		existing = append(existing, added)
+		report.ComparisonsAdded++
+	}
 }
 
 func ImportResearchMetadataFile(root, filename string) (MetadataTransferReport, error) {

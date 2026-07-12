@@ -30,13 +30,15 @@ no external tools and the copy survives network outages.
 - Per-manuscript serialization for annotation edits, with loopback Host and
   browser-Origin checks on every local mutation endpoint.
 - Portable researcher-metadata export and non-destructive, previewable import
-  for sharing catalogue titles/notes/tags and annotations without copying image
-  trees; a cross-process lock prevents concurrent server/import writes.
+  for sharing catalogue titles/notes/tags, annotations, and saved comparisons
+  without copying image trees; a cross-process lock prevents concurrent
+  server/import writes.
 - In-memory caching of localized manifests, invalidated by manifest or
   provenance changes.
 - A bookmarkable two-to-four manuscript comparison workspace with ordered
   catalogue selection and strict per-canvas routing to each bundle's local
-  annotation store.
+  annotation store; canvas deep links, named portable workspaces, and explicit
+  page/normalized-viewport synchronization support repeated comparisons.
 - Crash-safe collection ingestion with query-isolated completion ledgers and
   an atomic discovery frontier; reruns resume at the pending collection and
   reuse committed page images without HTTP. A durable conditional-GET cache,

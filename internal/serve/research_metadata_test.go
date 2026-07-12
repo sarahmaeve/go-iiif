@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -160,5 +161,57 @@ func TestResearchMetadataImportRejectsUnknownFormat(t *testing.T) {
 	_, err := ImportResearchMetadata(root, strings.NewReader(`{"format":"other","version":1}`))
 	if err == nil || !strings.Contains(err.Error(), "unsupported format") {
 		t.Fatalf("unknown archive format error = %v", err)
+	}
+}
+
+func TestResearchMetadataTransfersSavedComparisonsByManifestURL(t *testing.T) {
+	sourceRoot := copyComparisonFixture(t)
+	const canvas = "https://iiif.io/api/cookbook/recipe/0032-collection/manifest/1/canvas/p1"
+	sourceStore := newComparisonStore(sourceRoot)
+	if _, err := sourceStore.add(savedComparison{
+		Name: "Portable comparison", Docs: []string{"cookbook-v3", "bodleian-c481"},
+		Canvases: []string{canvas, ""}, SyncPage: true, SyncView: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var archive bytes.Buffer
+	exported, err := ExportResearchMetadata(sourceRoot, &archive)
+	if err != nil || exported.Comparisons != 1 {
+		t.Fatalf("export = %+v, %v", exported, err)
+	}
+	if !strings.Contains(archive.String(), `"comparisons"`) || !strings.Contains(archive.String(), `"canvas_id"`) {
+		t.Fatalf("archive lacks comparison state: %s", archive.String())
+	}
+
+	targetRoot := copyComparisonFixture(t)
+	for from, to := range map[string]string{"cookbook-v3": "relocated/cookbook", "bodleian-c481": "another/bodleian"} {
+		dst := filepath.Join(targetRoot, filepath.FromSlash(to))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(targetRoot, from), dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	preview, err := ImportResearchMetadataWithOptions(targetRoot, bytes.NewReader(archive.Bytes()), MetadataImportOptions{DryRun: true})
+	if err != nil || preview.ComparisonsAdded != 1 {
+		t.Fatalf("preview = %+v, %v", preview, err)
+	}
+	if _, err := os.Stat(filepath.Join(targetRoot, catalogDirName, comparisonFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preview wrote comparison state: %v", err)
+	}
+	result, err := ImportResearchMetadata(targetRoot, bytes.NewReader(archive.Bytes()))
+	if err != nil || result.ComparisonsAdded != 1 {
+		t.Fatalf("import = %+v, %v", result, err)
+	}
+	sets := newComparisonStore(targetRoot).list()
+	if len(sets) != 1 || sets[0].Name != "Portable comparison" ||
+		!slices.Equal(sets[0].Docs, []string{"relocated/cookbook", "another/bodleian"}) ||
+		sets[0].Canvases[0] != canvas || !sets[0].SyncPage || !sets[0].SyncView {
+		t.Fatalf("portable saved comparison = %+v", sets)
+	}
+	repeat, err := ImportResearchMetadata(targetRoot, bytes.NewReader(archive.Bytes()))
+	if err != nil || repeat.ComparisonDuplicates != 1 || repeat.ComparisonsAdded != 0 {
+		t.Fatalf("repeat comparison import = %+v, %v", repeat, err)
 	}
 }

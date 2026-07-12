@@ -43,7 +43,7 @@ type options struct {
 	dryRun         bool   // classify only, do not download images
 	doctor         bool   // validate the local library and exit
 	ingestStatus   bool   // report crawl and incomplete-bundle recovery state
-	exportMetadata string // write researcher-authored catalogue/annotations archive
+	exportMetadata string // write researcher-authored catalogue/annotations/comparisons archive
 	importMetadata string // non-destructively merge a researcher metadata archive
 	servePort      int    // -serve PORT; non-zero = serve the store on localhost, don't crawl
 	tlsCert        string
@@ -157,7 +157,7 @@ func parseArgs(args []string) (*options, error) {
 		dryRun         = fs.Bool("dry-run", false, "classify only; do not download images")
 		doctor         = fs.Bool("doctor", false, "validate manifests, provenance, images, tiles, annotations, and catalogue")
 		ingestStatus   = fs.Bool("ingest-status", false, "report incomplete bundles and crawl recovery state without changing files")
-		exportMetadata = fs.String("export-metadata", "", "export researcher-authored catalogue fields and annotations to FILE")
+		exportMetadata = fs.String("export-metadata", "", "export researcher-authored catalogue fields, annotations, and comparisons to FILE")
 		importMetadata = fs.String("import-metadata", "", "non-destructively import researcher metadata from FILE")
 		serve          servePortFlag
 		tlsCert        = fs.String("tls-cert", defaultTLSCert, "TLS certificate PEM (default: mkcert convention path)")
@@ -429,8 +429,8 @@ func runMetadataExport(o *options, out, errOut *cliWriter) int {
 		errOut.line("iiifpreserve:", err)
 		return 1
 	}
-	out.printf("iiifpreserve: exported %d bundle(s), %d annotation(s) to %s\n",
-		report.Bundles, report.Annotations, o.exportMetadata)
+	out.printf("iiifpreserve: exported %d bundle(s), %d annotation(s), %d saved comparison(s) to %s\n",
+		report.Bundles, report.Annotations, report.Comparisons, o.exportMetadata)
 	if out.err != nil {
 		return 1
 	}
@@ -447,11 +447,11 @@ func runMetadataImport(o *options, out, errOut *cliWriter) int {
 		out.line("WARN", warning)
 	}
 	if o.dryRun {
-		out.printf("iiifpreserve: import preview for %d bundle(s): %d catalogue change(s), %d annotation(s) would be added, %d duplicate(s) ignored (no files changed)\n",
-			report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.Duplicates)
+		out.printf("iiifpreserve: import preview for %d bundle(s): %d catalogue change(s), %d annotation(s) and %d comparison(s) would be added, %d duplicate annotation(s) and %d duplicate comparison(s) ignored (no files changed)\n",
+			report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.ComparisonsAdded, report.Duplicates, report.ComparisonDuplicates)
 	} else {
-		out.printf("iiifpreserve: imported %d bundle(s): %d catalogue change(s), %d annotation(s) added, %d duplicate(s) ignored\n",
-			report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.Duplicates)
+		out.printf("iiifpreserve: imported %d bundle(s): %d catalogue change(s), %d annotation(s) and %d comparison(s) added, %d duplicate annotation(s) and %d duplicate comparison(s) ignored\n",
+			report.Bundles, report.CatalogChanges, report.AnnotationsAdded, report.ComparisonsAdded, report.Duplicates, report.ComparisonDuplicates)
 	}
 	if out.err != nil {
 		return 1
