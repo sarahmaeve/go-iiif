@@ -5,7 +5,8 @@
 A single Go binary that builds and serves an offline, viewer-ready copy of
 subsets of IIIF collections.
 
-It crawls a chosen institution politely (or takes a single `-manifest <url>`),
+It crawls a chosen institution politely (or takes a single `-manifest <url>`
+or already-downloaded `-manifest-file <path>`),
 filters by metadata, writes a complete on-disk copy (images + local IIIF
 level0 tile pyramids + manifest + provenance) into a persistent
 institution-nested library, serves it over HTTPS with the manifest rewritten
@@ -16,6 +17,9 @@ no external tools and the copy survives network outages.
 - One compiled binary; no Node or Python at runtime.
 - Single-resource preservation via `-manifest <url>` — the path exercised
   end to end (download → tile → serve → view).
+- Byte-faithful local-manifest ingestion via `-manifest-file <path>` when a
+  browser can download a manifest that an institution will not serve to a
+  programmatic client.
 - Polite institution crawl with faceted `match`/`no-match` selection (e.g.
   French manuscripts, 15th c.) — built and live-tested at the classification
   layer; not yet dogfooded as a whole-library run.

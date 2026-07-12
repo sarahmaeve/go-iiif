@@ -62,6 +62,33 @@ resumable: re-running continues where it left off.
 
 The rest of this document is the same path with full detail and setup.
 
+### Local manifest file (including a manually downloaded LOC manifest)
+
+If you already have the original manifest JSON, preserve it directly:
+
+```sh
+iiifpreserve -manifest-file ./manifest.json -dry-run  # count pages first
+iiifpreserve -manifest-file ./manifest.json
+```
+
+The file must contain an absolute top-level `id` (Presentation 3) or `@id`
+(Presentation 2). Its bytes are stored unchanged; that ID supplies the bundle
+identity and provenance. Only the page images are fetched.
+
+For Library of Congress single-item URLs, `-manifest` also has an automatic
+fallback. It tries the named manifest first and, only if LOC returns its
+current 403 challenge, makes a second polite request to LOC's documented item
+JSON API and derives the ordered canvases from its `tile.loc.gov` IIIF links:
+
+```sh
+iiifpreserve -manifest https://www.loc.gov/item/0027938281A-ms/manifest.json -dry-run
+# reports 123 images; remove -dry-run to preserve them
+```
+
+Use `-manifest-file` when exact fidelity to a manually downloaded original
+manifest matters; the automatic fallback necessarily stores a derived
+Presentation 3 manifest because the challenged original was unavailable.
+
 ## 0. Prerequisites
 
 - **Go 1.26+** (`go version`)
@@ -188,8 +215,10 @@ the import.
 
 Under `~/iiif-images/<host>/<slug>/`:
 
-- `manifest.json` — the original, stored unmodified (rewritten to local
-  URLs only at serve time)
+- `manifest.json` — the acquired manifest, stored unmodified (rewritten to
+  local URLs only at serve time). It is the upstream original for normal URL
+  and file ingestion; LOC's documented fallback is explicitly derived from
+  the official item JSON API.
 - `NNNN.jpg` — each page at full size
 - `NNNN/` — its IIIF level-0 tile pyramid + `info.json` (deep zoom)
 - `provenance.json` — source URLs, recorded license, tile records

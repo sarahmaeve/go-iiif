@@ -74,3 +74,20 @@ func TestEnumerateImages_RealV2Manifests(t *testing.T) {
 		}
 	})
 }
+
+func TestEnumerateImages_V2CanvasLabelMayBeLocalizedArray(t *testing.T) {
+	manifest := []byte(`{"sequences":[{"canvases":[{
+		"label":[{"@value":"Folio 1r","@language":"en"}],
+		"images":[{"resource":{"service":{"@id":"https://images.example/iiif/page1"}}}]
+	}]}]}`)
+	images, err := EnumerateImages(manifest)
+	if err != nil {
+		t.Fatalf("EnumerateImages: %v", err)
+	}
+	if len(images) != 1 || images[0].ServiceID != "https://images.example/iiif/page1" {
+		t.Fatalf("images = %+v", images)
+	}
+	if images[0].Label != "Folio 1r" {
+		t.Fatalf("label = %q, want localized array value", images[0].Label)
+	}
+}

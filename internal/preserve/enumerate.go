@@ -35,7 +35,7 @@ func (h idHolder) id() string {
 type v2Manifest struct {
 	Sequences []struct {
 		Canvases []struct {
-			Label  string `json:"label"`
+			Label  json.RawMessage `json:"label"`
 			Images []struct {
 				Resource imageResource `json:"resource"`
 			} `json:"images"`
@@ -100,7 +100,7 @@ func EnumerateImages(manifest []byte) ([]ImageResource, error) {
 					ServiceID: img.Resource.serviceID(),
 					Width:     img.Resource.Width,
 					Height:    img.Resource.Height,
-					Label:     canvas.Label,
+					Label:     presentationLabel(canvas.Label),
 				})
 			}
 		}
@@ -127,4 +127,42 @@ func EnumerateImages(manifest []byte) ([]ImageResource, error) {
 		}
 	}
 	return out, nil
+}
+
+// presentationLabel tolerates the label shapes found across Presentation 2
+// deployments: a plain string, an array of localized @value objects, or a
+// Presentation 3-style language map. Labels are display-only here; a novel
+// shape must never prevent preservation of an otherwise valid canvas image.
+func presentationLabel(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var plain string
+	if json.Unmarshal(raw, &plain) == nil {
+		return plain
+	}
+	var localized []struct {
+		Value string `json:"@value"`
+	}
+	if json.Unmarshal(raw, &localized) == nil {
+		for _, value := range localized {
+			if value.Value != "" {
+				return value.Value
+			}
+		}
+	}
+	var languageMap map[string][]string
+	if json.Unmarshal(raw, &languageMap) == nil {
+		for _, language := range []string{"en", "none"} {
+			if values := languageMap[language]; len(values) > 0 {
+				return values[0]
+			}
+		}
+		for _, values := range languageMap {
+			if len(values) > 0 {
+				return values[0]
+			}
+		}
+	}
+	return ""
 }

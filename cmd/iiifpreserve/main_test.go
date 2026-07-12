@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"os"
 	"path/filepath"
@@ -276,6 +279,46 @@ func TestParseArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("local manifest file is parsed and exclusive", func(t *testing.T) {
+		o, err := parseArgs([]string{"-manifest-file", "/tmp/manuscript.json"})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.manifestFile != "/tmp/manuscript.json" {
+			t.Fatalf("manifestFile = %q", o.manifestFile)
+		}
+		for _, args := range [][]string{
+			{"-manifest-file", "local.json", "-manifest", "https://example.org/m"},
+			{"-manifest-file", "local.json", "-collection", "https://example.org/c"},
+			{"-manifest-file", "local.json", "-doctor"},
+		} {
+			if _, err := parseArgs(args); err == nil {
+				t.Fatalf("parseArgs(%v) succeeded; want mutually-exclusive mode error", args)
+			}
+		}
+	})
+
+	t.Run("taster requires exactly one single-manifest mode", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"-taster", "-manifest", "https://example.org/m"},
+			{"-taster", "-manifest-file", "local.json"},
+		} {
+			o, err := parseArgs(args)
+			if err != nil || !o.taster {
+				t.Fatalf("parseArgs(%v) = %+v, %v", args, o, err)
+			}
+		}
+		for _, args := range [][]string{
+			{"-taster", "-collection", "https://example.org/c"},
+			{"-taster", "-serve"},
+			{"-taster", "-manifest", "https://example.org/m", "-dry-run"},
+		} {
+			if _, err := parseArgs(args); err == nil {
+				t.Fatalf("parseArgs(%v) succeeded; want taster mode error", args)
+			}
+		}
+	})
+
 	t.Run("doctor is a standalone library mode", func(t *testing.T) {
 		o, err := parseArgs([]string{"-doctor", "-store", "/data/iiif"})
 		if err != nil {
@@ -517,6 +560,123 @@ func TestDryRunLine(t *testing.T) {
 func TestDryRunLine_BadManifest(t *testing.T) {
 	if _, _, err := dryRunLine([]byte("not json")); err == nil {
 		t.Fatal("expected an error for an undecodable manifest")
+	}
+}
+
+func TestLoadManifestFilePreservesBytesAndUsesManifestID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loc-manifest.json")
+	want := []byte("{\n  \"@context\": \"http://iiif.io/api/presentation/2/context.json\",\n  \"@id\": \"https://www.loc.gov/item/0027938281A-ms/manifest.json\",\n  \"@type\": \"sc:Manifest\",\n  \"sequences\": []\n}\n")
+	if err := os.WriteFile(path, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	gotID, got, err := loadManifestFile(path)
+	if err != nil {
+		t.Fatalf("loadManifestFile: %v", err)
+	}
+	if gotID != "https://www.loc.gov/item/0027938281A-ms/manifest.json" {
+		t.Fatalf("manifest ID = %q", gotID)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("loaded bytes changed:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestLoadManifestFileRequiresJSONManifestID(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"bad JSON", "not json"},
+		{"missing id", `{"type":"Manifest"}`},
+		{"non URL id", `{"id":"manuscript","type":"Manifest"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "manifest.json")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := loadManifestFile(path); err == nil {
+				t.Fatal("loadManifestFile succeeded; want validation error")
+			}
+		})
+	}
+}
+
+func TestRunLocalManifestFileDryRun(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	manifest := []byte(`{
+		"id":"https://example.org/iiif/local/manifest.json",
+		"type":"Manifest",
+		"items":[{"items":[{"items":[{"body":{"id":"https://example.org/image.jpg","type":"Image"}}]}]}]
+	}`)
+	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"-manifest-file", manifestPath,
+		"-dry-run",
+		"-store", t.TempDir(),
+	}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "https://example.org/iiif/local/manifest.json") ||
+		!strings.Contains(stdout.String(), "1 image(s)") {
+		t.Fatalf("stdout = %q, want manifest identity and image count", stdout.String())
+	}
+}
+
+type tasterFetcher struct {
+	wantURL string
+	image   []byte
+	calls   []string
+}
+
+func (f *tasterFetcher) Fetch(_ context.Context, rawURL string) ([]byte, error) {
+	f.calls = append(f.calls, rawURL)
+	if rawURL != f.wantURL {
+		return nil, errBoom
+	}
+	return f.image, nil
+}
+
+func TestRunTasterFetchesOnlyFirstImageAndStoresNothing(t *testing.T) {
+	const (
+		manifestURL  = "https://view.example/manifest.json"
+		firstService = "https://images.example/iiif/first"
+	)
+	manifest := []byte(`{"sequences":[{"canvases":[
+		{"images":[{"resource":{"service":{"@id":"` + firstService + `"}}}]},
+		{"images":[{"resource":{"service":{"@id":"https://images.example/iiif/second"}}}]}
+	]}]}`)
+	var encoded bytes.Buffer
+	imageData := image.NewRGBA(image.Rect(0, 0, 32, 24))
+	for y := range 24 {
+		for x := range 32 {
+			imageData.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 120, A: 255})
+		}
+	}
+	if err := jpeg.Encode(&encoded, imageData, nil); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &tasterFetcher{
+		wantURL: firstService + "/full/max/0/default.jpg",
+		image:   encoded.Bytes(),
+	}
+	var stdout, stderr strings.Builder
+	exit := runTaster(context.Background(), fetcher, manifestURL, manifest,
+		&cliWriter{w: &stdout}, &cliWriter{w: &stderr})
+	if exit != 0 {
+		t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+	}
+	if len(fetcher.calls) != 1 || fetcher.calls[0] != fetcher.wantURL {
+		t.Fatalf("fetch calls = %v, want only %q", fetcher.calls, fetcher.wantURL)
+	}
+	for _, want := range []string{"image 1/2", "32x24 JPEG", "not stored", fetcher.wantURL} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+		}
 	}
 }
 

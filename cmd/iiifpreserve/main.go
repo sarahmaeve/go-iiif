@@ -4,13 +4,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"image/jpeg"
 	"io"
 	"iter"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +33,7 @@ import (
 type options struct {
 	collection     string
 	manifest       string // -manifest: preserve one manifest URL, no crawl/filter
+	manifestFile   string // -manifest-file: preserve an already-downloaded pristine manifest
 	langs          []string
 	from, to       int
 	hasDate        bool
@@ -41,6 +46,7 @@ type options struct {
 	store          string // -store: persistent library root (resolved in run())
 	preserve       string // deprecated alias for -store (back-compat)
 	dryRun         bool   // classify only, do not download images
+	taster         bool   // fetch/decode the first image of one manifest, but store no bundle
 	doctor         bool   // validate the local library and exit
 	ingestStatus   bool   // report crawl and incomplete-bundle recovery state
 	exportMetadata string // write researcher-authored catalogue/annotations/comparisons archive
@@ -143,6 +149,7 @@ func parseArgs(args []string) (*options, error) {
 	var (
 		collection     = fs.String("collection", "", "IIIF Collection root URL to crawl")
 		manifest       = fs.String("manifest", "", "preserve a single manifest URL (no crawl; skips the filter)")
+		manifestFile   = fs.String("manifest-file", "", "preserve a local manifest JSON file (no manifest download; skips the filter)")
 		lang           = fs.String("lang", "", "comma-separated ISO 639-1 language codes")
 		from           = fs.Int("from", 0, "earliest year (inclusive)")
 		to             = fs.Int("to", 0, "latest year (inclusive)")
@@ -155,6 +162,7 @@ func parseArgs(args []string) (*options, error) {
 		store          = fs.String("store", "", "persistent image-library root (default: config `store=` or ~/iiif-images)")
 		preserve       = fs.String("preserve", "", "deprecated alias for -store")
 		dryRun         = fs.Bool("dry-run", false, "classify only; do not download images")
+		taster         = fs.Bool("taster", false, "fetch and validate only the first image of a single manifest; store no bundle")
 		doctor         = fs.Bool("doctor", false, "validate manifests, provenance, images, tiles, annotations, and catalogue")
 		ingestStatus   = fs.Bool("ingest-status", false, "report incomplete bundles and crawl recovery state without changing files")
 		exportMetadata = fs.String("export-metadata", "", "export researcher-authored catalogue fields, annotations, and comparisons to FILE")
@@ -177,20 +185,26 @@ func parseArgs(args []string) (*options, error) {
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("unexpected argument %q; pass options as flags (use -serve=PORT, not -serve PORT)", fs.Arg(0))
 	}
-	if *collection != "" && *manifest != "" {
-		return nil, errors.New("-collection and -manifest are mutually exclusive")
+	acquireModes := 0
+	for _, selected := range []bool{*collection != "", *manifest != "", *manifestFile != ""} {
+		if selected {
+			acquireModes++
+		}
+	}
+	if acquireModes > 1 {
+		return nil, errors.New("-collection, -manifest, and -manifest-file are mutually exclusive")
 	}
 	if *pageRetries < 0 {
 		return nil, errors.New("-page-retries must be zero or greater")
 	}
-	if *doctor && (serve != 0 || *collection != "" || *manifest != "" || *ingestStatus) {
-		return nil, errors.New("-doctor is mutually exclusive with -collection, -manifest, -serve, and -ingest-status")
+	if *doctor && (serve != 0 || acquireModes > 0 || *ingestStatus) {
+		return nil, errors.New("-doctor is mutually exclusive with acquisition modes, -serve, and -ingest-status")
 	}
-	if *ingestStatus && (serve != 0 || *collection != "" || *manifest != "" || *exportMetadata != "" || *importMetadata != "") {
+	if *ingestStatus && (serve != 0 || acquireModes > 0 || *exportMetadata != "" || *importMetadata != "") {
 		return nil, errors.New("-ingest-status is a standalone mode")
 	}
 	if (*exportMetadata != "" || *importMetadata != "") &&
-		(serve != 0 || *collection != "" || *manifest != "" || *doctor || (*exportMetadata != "" && *importMetadata != "")) {
+		(serve != 0 || acquireModes > 0 || *doctor || (*exportMetadata != "" && *importMetadata != "")) {
 		return nil, errors.New("-export-metadata and -import-metadata are standalone, mutually exclusive modes")
 	}
 	if *exportMetadata != "" && *dryRun {
@@ -208,12 +222,19 @@ func parseArgs(args []string) (*options, error) {
 	if *fresh && *journal != "" {
 		return nil, errors.New("-fresh cannot be combined with deprecated -journal migration")
 	}
-	if serve == 0 && *collection == "" && *manifest == "" && !*doctor && !*ingestStatus && *exportMetadata == "" && *importMetadata == "" {
-		return nil, errors.New("one of -collection, -manifest, -serve, -doctor, -ingest-status, -export-metadata, or -import-metadata is required")
+	if *taster && *manifest == "" && *manifestFile == "" {
+		return nil, errors.New("-taster requires -manifest or -manifest-file")
+	}
+	if *taster && *dryRun {
+		return nil, errors.New("-taster and -dry-run are mutually exclusive; taster fetches one image")
+	}
+	if serve == 0 && acquireModes == 0 && !*doctor && !*ingestStatus && *exportMetadata == "" && *importMetadata == "" {
+		return nil, errors.New("one of -collection, -manifest, -manifest-file, -serve, -doctor, -ingest-status, -export-metadata, or -import-metadata is required")
 	}
 	o := &options{
 		collection:     *collection,
 		manifest:       *manifest,
+		manifestFile:   *manifestFile,
 		langs:          splitCSV(*lang),
 		from:           *from,
 		to:             *to,
@@ -227,6 +248,7 @@ func parseArgs(args []string) (*options, error) {
 		store:          *store,
 		preserve:       *preserve,
 		dryRun:         *dryRun,
+		taster:         *taster,
 		doctor:         *doctor,
 		ingestStatus:   *ingestStatus,
 		exportMetadata: *exportMetadata,
@@ -319,7 +341,7 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 		return runServe(ctx, o, out, errOut)
 	}
 
-	if o.manifest != "" {
+	if o.manifest != "" || o.manifestFile != "" {
 		return runManifest(ctx, o, out, errOut)
 	}
 
@@ -415,12 +437,13 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	return 0
 }
 
-func newCLIFetcher(storeRoot string) (*source.PoliteFetcher, error) {
+func newCLIFetcher(storeRoot string) (source.Fetcher, error) {
 	cache, err := source.NewFileConditionalStore(filepath.Join(storeRoot, ".iiifpreserve", "http-cache"))
 	if err != nil {
 		return nil, err
 	}
-	return source.NewPoliteFetcher(source.NewHTTPFetcher(source.WithConditionalStore(cache))), nil
+	polite := source.NewPoliteFetcher(source.NewHTTPFetcher(source.WithConditionalStore(cache)))
+	return source.NewLOCManifestFetcher(polite), nil
 }
 
 func runMetadataExport(o *options, out, errOut *cliWriter) int {
@@ -603,10 +626,20 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 		return 1
 	}
 
-	body, err := fetcher.Fetch(ctx, o.manifest)
-	if err != nil {
-		errOut.line("iiifpreserve: fetching manifest:", err)
-		return 1
+	manifestURL := o.manifest
+	var body []byte
+	if o.manifestFile != "" {
+		manifestURL, body, err = loadManifestFile(o.manifestFile)
+		if err != nil {
+			errOut.line("iiifpreserve: reading manifest file:", err)
+			return 1
+		}
+	} else {
+		body, err = fetcher.Fetch(ctx, manifestURL)
+		if err != nil {
+			errOut.line("iiifpreserve: fetching manifest:", err)
+			return 1
+		}
 	}
 
 	if o.dryRun {
@@ -615,11 +648,14 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 			errOut.line("iiifpreserve: enumerating images:", err)
 			return 1
 		}
-		out.printf("iiifpreserve: %s — %d image(s) (dry-run, not stored)\n", o.manifest, len(images))
+		out.printf("iiifpreserve: %s — %d image(s) (dry-run, not stored)\n", manifestURL, len(images))
 		if out.err != nil {
 			return 1
 		}
 		return 0
+	}
+	if o.taster {
+		return runTaster(ctx, fetcher, manifestURL, body, out, errOut)
 	}
 
 	// Per-image progress to stderr — a whole Gallica manuscript under the
@@ -627,7 +663,7 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
 		errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
 	})
-	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), o.manifest, body, progress, preserve.WithPageRetries(o.pageRetries))
+	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), manifestURL, body, progress, preserve.WithPageRetries(o.pageRetries))
 	if err != nil {
 		errOut.line("iiifpreserve:", err)
 		return 1
@@ -638,6 +674,65 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 		return 1
 	}
 	return 0
+}
+
+// runTaster exercises the same first-page URL selection and JPEG validation
+// as preservation, but deliberately writes no manifest, image, provenance, or
+// tiles. A partial preservation bundle would misrepresent a multi-page work as
+// complete; taster is a connectivity/compatibility check, not acquisition.
+func runTaster(ctx context.Context, fetcher source.Fetcher, manifestURL string, manifest []byte, out, errOut *cliWriter) int {
+	images, err := preserve.EnumerateImages(manifest)
+	if err != nil {
+		errOut.line("iiifpreserve: taster enumerating images:", err)
+		return 1
+	}
+	if len(images) == 0 {
+		errOut.line("iiifpreserve: taster: manifest has no images:", manifestURL)
+		return 1
+	}
+	body, usedURL, _, err := preserve.FetchImage(ctx, fetcher, images[0].ServiceID, -1)
+	if err != nil {
+		errOut.line("iiifpreserve: taster fetching first image:", err)
+		return 1
+	}
+	config, err := jpeg.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		errOut.line("iiifpreserve: taster decoding first image:", err)
+		return 1
+	}
+	out.printf("iiifpreserve: taster fetched image 1/%d — %dx%d JPEG, %d bytes — %s (not stored)\n",
+		len(images), config.Width, config.Height, len(body), usedURL)
+	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
+}
+
+// loadManifestFile reads a manually downloaded manifest without rewriting or
+// re-marshalling it. Its top-level id/@id becomes the canonical source URL
+// used for the bundle path and provenance, so the local filename is never
+// mistaken for the preserved resource's identity.
+func loadManifestFile(path string) (string, []byte, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, err
+	}
+	var identity struct {
+		IDV2 string `json:"@id"`
+		IDV3 string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &identity); err != nil {
+		return "", nil, fmt.Errorf("decoding %s: %w", path, err)
+	}
+	manifestURL := identity.IDV3
+	if manifestURL == "" {
+		manifestURL = identity.IDV2
+	}
+	u, err := url.Parse(manifestURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", nil, fmt.Errorf("%s: manifest must have an absolute http(s) id or @id", path)
+	}
+	return manifestURL, body, nil
 }
 
 // tlsSetupHint is the remediation shown when the TLS cert/key are missing:

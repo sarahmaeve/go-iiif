@@ -2,7 +2,7 @@
 
 > Status: **acquire → select → preserve → serve → view → deep-zoom is built
 > and live-dogfooded.** One binary crawls a real institution politely (or
-> takes a single `-manifest <url>`), filters, writes a complete on-disk copy
+> takes a single `-manifest <url>` or pristine local `-manifest-file <path>`), filters, writes a complete on-disk copy
 > (images + **local IIIF level0 tile pyramids** + manifest + provenance) into
 > a persistent institution-nested library, serves it over HTTPS with the
 > manifest **rewritten on the fly** to point at local images *and* a local
@@ -43,7 +43,7 @@ Reference article: https://digitalorientalist.com/2026/05/12/running-iiif-locall
 | Subsetting | Local **metadata normalization** → typed `WorkRecord` → predicate filter, applied **before** image download | No global IIIF search exists; metadata is free-text/multilingual/per-institution |
 | Filter policy | **Two outcomes** `match` / `no-match`. A specified criterion only excludes when the metadata confidently fails it; when the field is absent the item is **kept** (lenient) | Preservation tool: losing a possibly-wanted manuscript is worse than an extra download. No reject/approve workflow |
 | Storage | **`BlobStore` interface**, `local` first; persistent root via `-store` > config file (`store=`) > `~/iiif-images` default; **nested by institution** `<root>/<host>/<slug>/` | Researcher's local drive as a long-lived library; interface keeps other backends possible later (no `aws-sdk-go`). Config is a tiny stdlib `key=value` parser (no YAML/TOML dep) |
-| Acquire modes | `-collection <url>` (crawl) **or** `-manifest <url>` (single resource, skips the filter, uses the polite Go fetcher) | A single named manifest is an intentional choice; `-manifest` also replaces curl for fixtures/dogfooding. `-dry-run` = classify only |
+| Acquire modes | `-collection <url>` (crawl), `-manifest <url>` (single remote resource), or `-manifest-file <path>` (single already-downloaded manifest); both single-resource modes skip the filter | A single named manifest is an intentional choice. The file mode preserves its input bytes exactly, takes the manifest's top-level `id`/`@id` as bundle identity, and avoids a manifest request when an institution permits browser download but challenges programmatic access. `-dry-run` = classify/count only |
 | Per-item preservation | Per-canvas JPEG via the IIIF Image API at the **largest available size** (`/full/max` → `/full/full` → bare URL), plus the manifest and a provenance log | Grounded in the reference tool (`iiif-download`); a research preservation copy, not a commercial mirror |
 | Serving | **Built.** Static HTTPS file server over the BlobStore tree; `*/manifest.json` rewritten on the fly (serve-time, provenance-driven) so images resolve locally. Stored manifest stays pristine | Simplest correct; no config, no second file; loopback-only |
 | Embedded viewer | **Built.** Mirador 4 served at `/` (index of preserved manifests) and `/<dir>/` (viewer), bundle at `/__viewer__/mirador.min.js` | A researcher needs no external viewer; manifest passed via a data-attribute to dodge html/template JS-string `\/` escaping |
@@ -127,6 +127,17 @@ The normal CLI fetcher persists ETag/Last-Modified validators, content type,
 and bounded JSON response bodies under `.iiifpreserve/http-cache/`; page-image
 bodies are excluded because committed JPEGs are their durable cache. A 304
 after restart is satisfied from the atomic cached record.
+Library of Congress Presentation manifest routes are a narrow exception:
+`www.loc.gov/item/<id>/manifest.json` currently receives a Cloudflare 403,
+while LOC's documented item JSON API and `tile.loc.gov` IIIF Image API remain
+available to identified clients. The fetcher first tries the requested
+manifest normally; on a 403 for only that exact route it politely pulls
+`/item/<id>/?fo=json` and derives an ordered Presentation 3 manifest from the
+item's page-file groups and `info.json` links. This is intentionally two-step,
+so the pristine upstream manifest wins automatically if the challenge is
+removed. The derived manifest links its source item JSON with `seeAlso`. A
+researcher who manually downloads the original should instead use
+`-manifest-file` to retain exact manifest bytes.
 **Bot-wall stance:** present an honest identifying User-Agent (a one-time
 public-domain preservation fetch is not abusive) rather than spoofing a
 browser — bot-walls like Anubis (which Bodleian uses) add suspicion weight
@@ -154,8 +165,12 @@ local JPEG. Tiling is best-effort. `provenance.json` is written last only when
 all required page images succeed, making it the atomic bundle completion
 marker used by the catalogue.
 
-The saved `manifest.json` is stored **unmodified** (fidelity/provenance);
-rewriting happens at serve time (§4.5), not on disk.
+The acquired `manifest.json` bytes are stored **unmodified**
+(fidelity/provenance); rewriting happens at serve time (§4.5), not on disk.
+For `-manifest-file` and ordinary remote manifests those are the original
+upstream bytes. The documented LOC fallback is the explicit exception: its
+acquired bytes are a derived Presentation 3 manifest linked to the official
+source item JSON with `seeAlso`.
 
 ### 4.5 Serving (built)
 A static HTTPS file server over the BlobStore tree (stdlib only;
@@ -225,11 +240,14 @@ carries the most risk.
   vocabulary (`Text Language`, `Date of Origin (English)`, `Place of Origin
   (English)`, `Century`) is in the shared default mapping, so filtered
   e-codices crawls now constrain correctly. Adding a source is one place.
-- **Out of polite scope:** Library of Congress (`www.loc.gov`) fronts its
-  IIIF with Akamai-class edge protection that 403s programmatic clients
-  regardless of User-Agent (browser-spoof also 403s; even WebFetch 403s).
-  Passing it would require evasive fingerprinting — the arms race the
-  honest-UA stance deliberately refuses. Recorded, not pursued.
+- **Library of Congress — RESOLVED for single items without evasion.** Its
+  Presentation manifest route is currently behind a Cloudflare managed
+  challenge, but its documented item JSON API and `tile.loc.gov` Image API
+  accept the honest client. `-manifest` now uses the narrow polite two-step
+  fallback described in §4.3; the supplied 123-image Greek manuscript
+  `0027938281A-ms` was enumerated live. `-manifest-file` is the byte-faithful
+  route when the original manifest has been downloaded manually. A complete
+  123-page preservation/serve/deep-zoom run has not yet been dogfooded.
 - Preservation dogfooded end-to-end against **Bodleian**, the **IIIF
   Cookbook** (v3), and **Gallica/BnF** (single-image estampe
   `btv1b9055204k`: ~39s honouring the 13s/host throttle → tiled, served,
@@ -275,7 +293,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | Two-outcome `match`/`no-match` filter (lang/date/origin; lenient on missing data) | ✅ done | `internal/metadata` |
 | Tolerant **version-agnostic** metadata extraction (`ExtractMetadata` + `normalizeIIIFText`: plain/v2-localized/v3 language-map; English-preferring) | ✅ done | `internal/metadata` |
 | `collection` Source adapter (recursive, cycle-safe) | ✅ done | `internal/source` |
-| HTTPS `Fetcher` (HTTPS-only enforced, std TLS verify; **honest identifying UA** by default with per-host browser-spoof override only where forced e.g. Gallica; honest `Accept`; status mapping; **rejects HTML interstitials** so a bot-wall/error page is never archived) | ✅ done | `internal/source` |
+| HTTPS `Fetcher` (HTTPS-only enforced, std TLS verify; **honest identifying UA** by default with per-host browser-spoof override only where forced e.g. Gallica; honest `Accept`; status mapping; **rejects HTML interstitials** so a bot-wall/error page is never archived; narrow LOC manifest-403 → official item-JSON derived-manifest fallback) | ✅ done | `internal/source` |
 | Polite trawler: per-host rate limit, concurrency cap, 429/503 backoff; automatic query-aware completion ledger and failure report; atomic pending/visited/discovered collection frontier; completed reruns make zero discovery requests; `-fresh` safely starts a new scan; durable bounded JSON conditional-GET cache with ETag/Last-Modified (page images excluded); SIGINT/SIGTERM recovery, `-ingest-status`, and explicit `-page-retries` policy | ✅ done | `internal/source`, `cmd/iiifpreserve` |
 | End-to-end classification pipeline | ✅ done | `internal/pipeline` |
 | Concurrent pipeline fan-out (opt-in `Workers`; per-host politeness preserved; live multi-host verified) | ✅ done | `internal/pipeline` |
@@ -306,7 +324,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | **Option A frontend (done):** custom Mirador 4 UMD built from a local Mirador 4 **source checkout** (`viewer-src/` + `MIRADOR_SRC`, `make viewer`) with the **MAE annotation editor** + a ~50-line `HttpAnnotationAdapter` mapping MAE's `create/update/delete/all` → the existing REST endpoints, for in-canvas point-and-drag region selection. Source build (not the `mirador@4.0.0` npm tag) is required: MAE's creation companion window only renders with the post-4.0.0 `CompanionWindowRegistry` path. **MAE is pinned to `1.2.4`** (not latest `1.3.0`): `1.2.5` introduced a regression that renders `<Typography component="HotKey">` — an invalid element string — spamming a React casing warning and doubling tooltips; verified by reading each published dist, `1.2.4` is the last release free of it while still carrying the `getStorageAdapterUser` (save) and `companionWindowKey` (panel) code we depend on. Still one embedded asset (MAE CSS inlined, no sidecar); Node is a one-time vendoring step, never the binary. The legacy pure-Go `<details>` xywh form has been removed — MAE's in-canvas drawing is the sole authoring path. | ✅ done | `viewer-src/`, `internal/serve` |
 | **Tiling + deep zoom**: local IIIF level0 static pyramids (`tile.go`: `tilePlan`/`infoJSON`/`renderTilePyramid`, `x/image/draw`) | ✅ done | `internal/preserve` |
 | Serve-time `info.json` `id` rewrite to the request URL | ✅ done | `internal/serve` |
-| Live dogfood: `-manifest` Cookbook v3 + Bodleian + Gallica estampe + 25-page Gallica ms + **e-codices Basel F III 15d (44 ff.)** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified. Verified sources tracked in `VERIFIED.md` | ✅ done | `internal/{preserve,serve}` `//go:build integration` + manual binary |
+| Live dogfood: `-manifest` Cookbook v3 + Bodleian + Gallica estampe + 25-page Gallica ms + **e-codices Basel F III 15d (44 ff.)** → tiled preserve → serve → localized + re-pointed + deep tile; resume verified. LOC's supplied Greek manuscript two-step acquisition → 123 canvases is live dry-run verified (full preservation still pending). `-manifest-file` is offline-tested with pristine v3 input. Verified sources tracked in `VERIFIED.md` | ✅ done | `internal/{source,preserve,serve}` `//go:build integration` + manual binary |
 The binary runs the full `acquire → select → preserve → serve → view →
 deep-zoom` path live (one binary, real institution or single `-manifest`:
 filtered, polite, institution-nested on-disk copy with provenance and local
