@@ -28,8 +28,6 @@ type savedComparison struct {
 	Name      string    `json:"name"`
 	Docs      []string  `json:"docs"`
 	Canvases  []string  `json:"canvases,omitempty"`
-	SyncPage  bool      `json:"sync_page,omitempty"`
-	SyncView  bool      `json:"sync_view,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

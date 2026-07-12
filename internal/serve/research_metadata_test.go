@@ -170,7 +170,7 @@ func TestResearchMetadataTransfersSavedComparisonsByManifestURL(t *testing.T) {
 	sourceStore := newComparisonStore(sourceRoot)
 	if _, err := sourceStore.add(savedComparison{
 		Name: "Portable comparison", Docs: []string{"cookbook-v3", "bodleian-c481"},
-		Canvases: []string{canvas, ""}, SyncPage: true, SyncView: true,
+		Canvases: []string{canvas, ""},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestResearchMetadataTransfersSavedComparisonsByManifestURL(t *testing.T) {
 	sets := newComparisonStore(targetRoot).list()
 	if len(sets) != 1 || sets[0].Name != "Portable comparison" ||
 		!slices.Equal(sets[0].Docs, []string{"relocated/cookbook", "another/bodleian"}) ||
-		sets[0].Canvases[0] != canvas || !sets[0].SyncPage || !sets[0].SyncView {
+		sets[0].Canvases[0] != canvas {
 		t.Fatalf("portable saved comparison = %+v", sets)
 	}
 	repeat, err := ImportResearchMetadata(targetRoot, bytes.NewReader(archive.Bytes()))

@@ -31,8 +31,6 @@ type researchMetadataArchive struct {
 type researchComparison struct {
 	Name      string                       `json:"name"`
 	Documents []researchComparisonDocument `json:"documents"`
-	SyncPage  bool                         `json:"sync_page,omitempty"`
-	SyncView  bool                         `json:"sync_view,omitempty"`
 }
 
 type researchComparisonDocument struct {
@@ -113,7 +111,7 @@ func ExportResearchMetadata(root string, w io.Writer) (MetadataTransferReport, e
 		return report, comparisonState.loadErr
 	}
 	for _, saved := range comparisonState.list() {
-		portable := researchComparison{Name: saved.Name, SyncPage: saved.SyncPage, SyncView: saved.SyncView}
+		portable := researchComparison{Name: saved.Name}
 		for i, dir := range saved.Docs {
 			doc := researchComparisonDocument{BundleDir: dir}
 			if entry, ok := byDir[dir]; ok {
@@ -263,13 +261,13 @@ func mergeComparisons(root string, c *catalog, byURL map[string]string, incoming
 			report.Warnings = append(report.Warnings, fmt.Sprintf("comparison %q: %v", comparison.Name, err))
 			continue
 		}
-		candidate := savedComparison{Name: comparison.Name, Docs: docs, Canvases: canvases, SyncPage: comparison.SyncPage, SyncView: comparison.SyncView}
+		candidate := savedComparison{Name: comparison.Name, Docs: docs, Canvases: canvases}
 		conflict := false
 		for _, local := range existing {
 			if !strings.EqualFold(local.Name, candidate.Name) {
 				continue
 			}
-			if slices.Equal(local.Docs, candidate.Docs) && slices.Equal(local.Canvases, candidate.Canvases) && local.SyncPage == candidate.SyncPage && local.SyncView == candidate.SyncView {
+			if slices.Equal(local.Docs, candidate.Docs) && slices.Equal(local.Canvases, candidate.Canvases) {
 				report.ComparisonDuplicates++
 			} else {
 				report.Warnings = append(report.Warnings, fmt.Sprintf("comparison %q conflicts; kept local value", comparison.Name))

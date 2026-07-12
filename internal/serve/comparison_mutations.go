@@ -26,18 +26,12 @@ func (s *Server) handleComparisonSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid saved comparison: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	syncPage, syncView, err := parseComparisonSync(r.PostForm["sync"])
-	if err != nil {
-		http.Error(w, "invalid saved comparison: "+err.Error(), http.StatusBadRequest)
-		return
-	}
 	normalizedCanvases := make([]string, len(items))
 	for i := range items {
 		normalizedCanvases[i] = items[i].Canvas
 	}
 	_, err = s.comparisons.add(savedComparison{
 		Name: r.PostFormValue("name"), Docs: docs, Canvases: normalizedCanvases,
-		SyncPage: syncPage, SyncView: syncView,
 	})
 	if err != nil {
 		if errors.Is(err, ErrComparisonNameExists) {
@@ -47,7 +41,7 @@ func (s *Server) handleComparisonSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not save comparison: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	query := comparisonQuery(docs, normalizedCanvases, syncPage, syncView)
+	query := comparisonQuery(docs, normalizedCanvases)
 	query.Set("saved", "1")
 	http.Redirect(w, r, compareRoute+"?"+query.Encode(), http.StatusSeeOther)
 }
@@ -86,7 +80,7 @@ type savedComparisonSummary struct {
 func comparisonSummaries(sets []savedComparison) []savedComparisonSummary {
 	out := make([]savedComparisonSummary, 0, len(sets))
 	for _, set := range sets {
-		query := comparisonQuery(set.Docs, set.Canvases, set.SyncPage, set.SyncView)
+		query := comparisonQuery(set.Docs, set.Canvases)
 		out = append(out, savedComparisonSummary{ID: set.ID, Name: set.Name, Href: compareRoute + "?" + query.Encode()})
 	}
 	return out

@@ -154,18 +154,18 @@ func TestServerComparisonUsesOrderedLocalManifestsAndCanvasRoutes(t *testing.T) 
 	}
 }
 
-func TestComparisonDeepLinksValidateCanvasOwnershipAndSyncModes(t *testing.T) {
+func TestComparisonDeepLinksValidateCanvasOwnership(t *testing.T) {
 	srv := New(filepath.Join("testdata", "bundle"))
 	const cookbookCanvas = "https://iiif.io/api/cookbook/recipe/0032-collection/manifest/1/canvas/p1"
 	const bodleianCanvas = "https://iiif.bodleian.ox.ac.uk/iiif/canvas/c85d87de-abd9-43b1-abf4-c65a814dc0a8.json"
-	query := comparisonQuery([]string{"cookbook-v3", "bodleian-c481"}, []string{cookbookCanvas, bodleianCanvas}, true, true)
+	query := comparisonQuery([]string{"cookbook-v3", "bodleian-c481"}, []string{cookbookCanvas, bodleianCanvas})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, compareRoute+"?"+query.Encode(), nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deep comparison = %d %q", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{`"canvas":"` + cookbookCanvas + `"`, `"canvas":"` + bodleianCanvas + `"`, `id="sync-page" type="checkbox" checked`, `id="sync-view" type="checkbox" checked`} {
+	for _, want := range []string{`"canvas":"` + cookbookCanvas + `"`, `"canvas":"` + bodleianCanvas + `"`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("deep comparison lacks %q", want)
 		}
@@ -173,7 +173,6 @@ func TestComparisonDeepLinksValidateCanvasOwnershipAndSyncModes(t *testing.T) {
 
 	bad := []string{
 		comparisonPath("cookbook-v3", "bodleian-c481") + "&canvas=" + url.QueryEscape(bodleianCanvas),
-		comparisonPath("cookbook-v3", "bodleian-c481") + "&sync=unknown",
 		comparisonPath("cookbook-v3", "bodleian-c481") + "&canvas=&canvas=&canvas=extra",
 	}
 	for _, requestPath := range bad {
@@ -191,7 +190,7 @@ func TestSavedComparisonPersistsListsAndDeletes(t *testing.T) {
 	const canvas = "https://iiif.io/api/cookbook/recipe/0032-collection/manifest/1/canvas/p1"
 	form := url.Values{
 		"name": {"Hands and currents"}, "doc": {"cookbook-v3", "bodleian-c481"},
-		"canvas": {canvas, ""}, "sync": {"page", "view"},
+		"canvas": {canvas, ""},
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, compareSaveRoute, strings.NewReader(form.Encode()))
@@ -201,13 +200,13 @@ func TestSavedComparisonPersistsListsAndDeletes(t *testing.T) {
 		t.Fatalf("save = %d Location=%q body=%q", rec.Code, rec.Header().Get("Location"), rec.Body.String())
 	}
 	sets := newComparisonStore(root).list()
-	if len(sets) != 1 || sets[0].Name != "Hands and currents" || !sets[0].SyncPage || !sets[0].SyncView || sets[0].Canvases[0] != canvas {
+	if len(sets) != 1 || sets[0].Name != "Hands and currents" || sets[0].Canvases[0] != canvas {
 		t.Fatalf("saved sets = %+v", sets)
 	}
 	reopened := New(root)
 	rec = httptest.NewRecorder()
 	reopened.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
-	for _, want := range []string{"Saved comparisons", "Hands and currents", "canvas=", "sync=page", "sync=view"} {
+	for _, want := range []string{"Saved comparisons", "Hands and currents", "canvas="} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("catalogue lacks saved comparison %q: %s", want, rec.Body.String())
 		}
@@ -256,14 +255,22 @@ func TestSavedComparisonNamesAreUnique(t *testing.T) {
 	}
 }
 
-func TestComparisonTemplateUsesPublicSyncSurfaces(t *testing.T) {
+func TestComparisonTemplateOmitsSynchronizationFeatures(t *testing.T) {
 	rec := httptest.NewRecorder()
 	New(filepath.Join("testdata", "bundle")).Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, comparisonPath("cookbook-v3", "bodleian-c481"), nil))
 	for _, want := range []string{
-		"Mirador.getWindows", "Mirador.setCanvas", "Mirador.OSDReferences", "getHomeBounds", "normalized.width", "Pair page position", "Sync zoom and pan", "history.replaceState",
+		"Mirador.getWindows", "history.replaceState", "saved-canvas",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("comparison synchronization lacks %q", want)
+			t.Fatalf("comparison workspace lacks %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"sync-page", "sync-view", "Pair page position", "Sync zoom and pan",
+		"Mirador.setCanvas", "Mirador.updateViewport", "Mirador.OSDReferences", "animation-finish", "getHomeBounds",
+	} {
+		if strings.Contains(rec.Body.String(), unwanted) {
+			t.Fatalf("comparison workspace still contains synchronization feature %q", unwanted)
 		}
 	}
 }

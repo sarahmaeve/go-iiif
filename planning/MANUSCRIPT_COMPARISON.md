@@ -1,6 +1,6 @@
 # Manuscript comparison workspace
 
-Status: Slices 1–4 implemented
+Status: Slices 1–3 implemented; synchronization removed
 
 ## Purpose
 
@@ -50,13 +50,7 @@ The page provides:
 - a clear small-screen message, followed by a usable stacked layout; and
 - the normal offline indication.
 
-Synchronization is always explicit and independently toggleable. **Pair page
-position** maps the active canvas's zero-based position to the same position in
-the other manuscripts, leaving a shorter manuscript unchanged when it has no
-corresponding canvas. **Sync zoom and pan** maps the visible rectangle relative
-to each image's home bounds, so different pixel dimensions compare the same
-relative region. Rotation and flip follow the active window as part of that
-mode. Both controls default off because manuscripts rarely align perfectly.
+Each manuscript window navigates, zooms, pans, rotates, and flips independently.
 
 ## URL and server contract
 
@@ -67,10 +61,9 @@ Use a GET-only route with repeated query parameters:
 ```
 
 Optional repeated `canvas` values are positional companions to `doc` and must
-belong to their corresponding local manifests. Repeated `sync=page` and
-`sync=view` values restore explicit synchronization choices. Current canvases
-and modes are maintained with `history.replaceState`, so copying or
-bookmarking the URL deep-links the live workspace.
+belong to their corresponding local manifests. Current canvases are maintained
+with `history.replaceState`, so copying or bookmarking the URL deep-links the
+live workspace.
 
 `doc` values are catalogue bundle slugs, not filesystem paths or arbitrary
 manifest URLs. The handler resolves every value through the in-memory
@@ -194,11 +187,9 @@ comparison file.
    canvas; a missing mapping cannot write to another bundle.
 7. The catalogue selection flow works with mouse and keyboard and has a
    comprehensible narrow-screen fallback.
-8. Initial canvases and sync modes survive copying, bookmarking, and saving a
-   workspace; a canvas from the wrong manuscript is rejected.
-9. Page pairing and viewport synchronization operate only when explicitly
-   enabled and can be disabled independently.
-10. Saved workspaces survive restart and metadata export/import without
+8. Initial canvases survive copying, bookmarking, and saving a workspace; a
+   canvas from the wrong manuscript is rejected.
+9. Saved workspaces survive restart and metadata export/import without
     overwriting a same-named local workspace.
 
 ## Test plan
@@ -222,5 +213,5 @@ comparison file.
    and annotation editing.
 3. **Implemented:** deep links to initial canvases and named saved comparison
    sets with portable research-metadata exchange.
-4. **Implemented:** explicit, opt-in page-position pairing and normalized
-   viewport/rotation/flip synchronization.
+4. Page-position and viewport synchronization were removed; each comparison
+   window remains independent.

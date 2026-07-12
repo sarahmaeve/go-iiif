@@ -32,8 +32,6 @@ type comparisonPage struct {
 	ItemsJSON       template.JS
 	EndpointsJSON   template.JS
 	ChangeSelection string
-	SyncPage        bool
-	SyncView        bool
 	Saved           bool
 }
 
@@ -68,13 +66,10 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
 <div class="top"><p class="kicker">Preserved archive · offline comparison</p><nav class="actions" aria-label="Comparison actions"><a href="/">&larr; Catalogue</a><a href="{{.ChangeSelection}}">Change selection</a><button id="copy-comparison" type="button">Copy comparison link</button></nav></div>
 <h1 id="comparison-heading" tabindex="-1">Compare manuscripts</h1>
 <ul class="titles">{{range .Items}}<li>{{.Title}}</li>{{end}}</ul>
-<div class="workspace-tools" aria-label="Comparison synchronization and saving">
-<label><input id="sync-page" type="checkbox"{{if .SyncPage}} checked{{end}}> Pair page position</label>
-<label><input id="sync-view" type="checkbox"{{if .SyncView}} checked{{end}}> Sync zoom and pan</label>
+<div class="workspace-tools" aria-label="Comparison saving">
 <form class="save-comparison" method="post" action="` + compareSaveRoute + `">
 <label for="comparison-name">Save as</label><input id="comparison-name" name="name" type="text" maxlength="200" required placeholder="Comparison name">
 {{range .Items}}<input type="hidden" name="doc" value="{{.Dir}}"><input class="saved-canvas" type="hidden" name="canvas" value="{{.Canvas}}">{{end}}
-<input id="saved-sync-page" type="hidden" name="sync" value="page"{{if not .SyncPage}} disabled{{end}}><input id="saved-sync-view" type="hidden" name="sync" value="view"{{if not .SyncView}} disabled{{end}}>
 <button type="submit">Save workspace</button>{{if .Saved}}<span class="saved-note" role="status">Saved</span>{{end}}
 </form>
 </div>
@@ -103,11 +98,7 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
     workspace: { type: 'mosaic' },
     windows: items.map((item) => ({ manifestId: item.manifest, ...(item.canvas ? { canvasId: item.canvas } : {}) }))
   });
-  const syncPage = document.getElementById('sync-page');
-  const syncView = document.getElementById('sync-view');
   const savedCanvases = Array.from(document.querySelectorAll('.saved-canvas'));
-  const savedSyncPage = document.getElementById('saved-sync-page');
-  const savedSyncView = document.getElementById('saved-sync-view');
   const live = document.getElementById('copy-status');
   const windowsForItems = () => {
     const windows = Object.values(Mirador.getWindows(mirador.store.getState()));
@@ -122,85 +113,10 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
     while (last >= 0 && canvases[last] === '') last--;
     canvases.slice(0, last + 1).forEach((canvas) => url.searchParams.append('canvas', canvas));
     url.searchParams.delete('sync');
-    if (syncPage.checked) url.searchParams.append('sync', 'page');
-    if (syncView.checked) url.searchParams.append('sync', 'view');
     history.replaceState(null, '', url);
     savedCanvases.forEach((input, i) => { input.value = canvases[i] || ''; });
-    savedSyncPage.disabled = !syncPage.checked;
-    savedSyncView.disabled = !syncView.checked;
   }
-  let syncingPage = false;
-  const previousCanvas = new Map();
-  mirador.store.subscribe(() => {
-    const windows = windowsForItems();
-    if (syncPage.checked && !syncingPage) {
-      const changed = windows.find((win) => win && previousCanvas.has(win.id) && previousCanvas.get(win.id) !== win.canvasId);
-      if (changed) {
-        const sourceIndex = windows.indexOf(changed);
-        const pageIndex = items[sourceIndex].canvases.indexOf(changed.canvasId);
-        if (pageIndex >= 0) {
-          syncingPage = true;
-          windows.forEach((win, i) => {
-            const target = items[i].canvases[pageIndex];
-            if (win && i !== sourceIndex && target && win.canvasId !== target) mirador.store.dispatch(Mirador.setCanvas(win.id, target));
-          });
-          syncingPage = false;
-        }
-      }
-    }
-    windows.forEach((win) => { if (win) previousCanvas.set(win.id, win.canvasId); });
-    writeWorkspaceURL(windows);
-  });
-
-  const attachedViewers = new Set();
-  const suppressViewUntil = new Map();
-  function attachViewportSync() {
-    const windows = windowsForItems();
-    windows.forEach((win) => {
-      if (!win || attachedViewers.has(win.id)) return;
-      const osd = Mirador.OSDReferences.get(win.id)?.current;
-      if (!osd) return;
-      attachedViewers.add(win.id);
-      osd.addHandler('animation-finish', () => {
-        const now = performance.now();
-        if (now < (suppressViewUntil.get(win.id) || 0)) {
-          suppressViewUntil.delete(win.id);
-          return;
-        }
-        if (!syncView.checked) return;
-        const home = osd.viewport.getHomeBounds();
-        const bounds = osd.viewport.getBounds(true);
-        if (!home || !home.width || !home.height) return;
-        const normalized = {
-          x: (bounds.x - home.x) / home.width,
-          y: (bounds.y - home.y) / home.height,
-          width: bounds.width / home.width,
-          height: bounds.height / home.height,
-        };
-        windowsForItems().forEach((targetWindow) => {
-          if (!targetWindow || targetWindow.id === win.id) return;
-          const target = Mirador.OSDReferences.get(targetWindow.id)?.current;
-          if (!target) return;
-          const targetHome = target.viewport.getHomeBounds();
-          if (!targetHome || !targetHome.width || !targetHome.height) return;
-          suppressViewUntil.set(targetWindow.id, performance.now() + 1500);
-          const Rect = targetHome.constructor;
-          target.viewport.fitBounds(new Rect(
-            targetHome.x + normalized.x * targetHome.width,
-            targetHome.y + normalized.y * targetHome.height,
-            normalized.width * targetHome.width,
-            normalized.height * targetHome.height,
-          ), false);
-          target.viewport.setRotation(osd.viewport.getRotation());
-          target.viewport.setFlip(osd.viewport.getFlip());
-        });
-      });
-    });
-    if (attachedViewers.size < items.length) window.setTimeout(attachViewportSync, 250);
-  }
-  attachViewportSync();
-  syncPage.addEventListener('change', () => { writeWorkspaceURL(); live.textContent = syncPage.checked ? 'Page pairing enabled.' : 'Page pairing disabled.'; });
-  syncView.addEventListener('change', () => { writeWorkspaceURL(); live.textContent = syncView.checked ? 'Zoom and pan synchronization enabled.' : 'Zoom and pan synchronization disabled.'; });
+  mirador.store.subscribe(() => { writeWorkspaceURL(); });
   writeWorkspaceURL();
   const status = live;
   document.getElementById('copy-comparison').addEventListener('click', async () => {
@@ -356,12 +272,7 @@ func (s *Server) serveComparison(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not encode annotation routes", http.StatusInternalServerError)
 		return
 	}
-	syncPage, syncView, err := parseComparisonSync(r.URL.Query()["sync"])
-	if err != nil {
-		http.Error(w, "invalid comparison: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	query := comparisonQuery(docs, nil, false, false).Encode()
+	query := comparisonQuery(docs, nil).Encode()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = comparisonTmpl.Execute(w, comparisonPage{ //nolint:errcheck // best-effort response write
 		Items: items,
@@ -371,39 +282,17 @@ func (s *Server) serveComparison(w http.ResponseWriter, r *http.Request) {
 		ItemsJSON:       template.JS(itemsJSON),     //nolint:gosec // trusted encoding/json output
 		EndpointsJSON:   template.JS(endpointsJSON), //nolint:gosec // trusted encoding/json output
 		ChangeSelection: "/?" + query,
-		SyncPage:        syncPage,
-		SyncView:        syncView,
 		Saved:           r.URL.Query().Get("saved") == "1",
 	})
 }
 
-func parseComparisonSync(values []string) (page, view bool, err error) {
-	for _, value := range values {
-		switch value {
-		case "page":
-			page = true
-		case "view":
-			view = true
-		default:
-			return false, false, fmt.Errorf("unknown synchronization mode %q", value)
-		}
-	}
-	return page, view, nil
-}
-
-func comparisonQuery(docs, canvases []string, syncPage, syncView bool) url.Values {
+func comparisonQuery(docs, canvases []string) url.Values {
 	query := url.Values{"doc": append([]string(nil), docs...)}
 	for len(canvases) > 0 && canvases[len(canvases)-1] == "" {
 		canvases = canvases[:len(canvases)-1]
 	}
 	if len(canvases) > 0 {
 		query["canvas"] = append([]string(nil), canvases...)
-	}
-	if syncPage {
-		query.Add("sync", "page")
-	}
-	if syncView {
-		query.Add("sync", "view")
 	}
 	return query
 }
