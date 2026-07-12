@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/annotation"
+	"github.com/sarahmaeve/go-iiif/internal/preserve"
 )
 
 // DoctorProblem is one actionable integrity finding in a local library.
@@ -22,11 +24,12 @@ type DoctorProblem struct {
 
 // DoctorReport summarizes a read-only, exhaustive library integrity check.
 type DoctorReport struct {
-	Bundles      int
-	Images       int
-	TilePyramids int
-	FilesChecked int
-	Problems     []DoctorProblem
+	Bundles         int
+	Images          int
+	TilePyramids    int
+	LinkedResources int
+	FilesChecked    int
+	Problems        []DoctorProblem
 }
 
 func (r DoctorReport) Healthy() bool {
@@ -85,6 +88,7 @@ func DiagnoseLibrary(root string) DoctorReport {
 func diagnoseBundle(report *DoctorReport, ref bundleRef) {
 	manifestPath := filepath.Join(ref.absDir, "manifest.json")
 	manifest, err := os.ReadFile(manifestPath) //nolint:gosec // discovered under configured library root
+	presentationManifest := manifest
 	if err != nil {
 		report.problem("ERROR", ref.slug+"/manifest.json", "cannot read manifest: %v", err)
 	} else {
@@ -105,6 +109,53 @@ func diagnoseBundle(report *DoctorReport, ref bundleRef) {
 	if err := json.Unmarshal(provBytes, &prov); err != nil {
 		report.problem("ERROR", ref.slug+"/provenance.json", "invalid provenance JSON: %v", err)
 		return
+	}
+	if prov.ManifestFile != "" {
+		if !safeManifestFile(prov.ManifestFile) {
+			report.problem("ERROR", ref.slug+"/provenance.json", "unsafe manifest_file %q", prov.ManifestFile)
+		} else {
+			activePath := filepath.Join(ref.absDir, filepath.FromSlash(prov.ManifestFile))
+			active, activeErr := os.ReadFile(activePath) //nolint:gosec // validated relative path under bundle
+			if activeErr != nil {
+				report.problem("ERROR", ref.slug+"/"+prov.ManifestFile, "cannot read active manifest: %v", activeErr)
+			} else {
+				presentationManifest = active
+				report.FilesChecked++
+				if !json.Valid(active) {
+					report.problem("ERROR", ref.slug+"/"+prov.ManifestFile, "invalid JSON")
+				}
+			}
+		}
+	}
+	preservedLinked := make(map[string]bool, len(prov.LinkedResources))
+	for _, resource := range prov.LinkedResources {
+		preservedLinked[resource.URL] = true
+	}
+	if expected, discoverErr := preserve.DiscoverLinkedResources(presentationManifest); discoverErr == nil {
+		type missingGroup struct {
+			count int
+			first string
+		}
+		missing := make(map[string]missingGroup)
+		for _, resource := range expected {
+			if !preservedLinked[resource.URL] {
+				group := missing[resource.Kind]
+				group.count++
+				if group.first == "" {
+					group.first = resource.URL
+				}
+				missing[resource.Kind] = group
+			}
+		}
+		kinds := make([]string, 0, len(missing))
+		for kind := range missing {
+			kinds = append(kinds, kind)
+		}
+		sort.Strings(kinds)
+		for _, kind := range kinds {
+			group := missing[kind]
+			report.problem("WARN", ref.slug+"/manifest.json", "%d linked %s resource(s) are not preserved (first: %s)", group.count, kind, group.first)
+		}
 	}
 
 	seen := make(map[string]bool)
@@ -130,6 +181,29 @@ func diagnoseBundle(report *DoctorReport, ref bundleRef) {
 		}
 		report.TilePyramids++
 		diagnosePyramid(report, ref, img.TileDir)
+	}
+	for i, resource := range prov.LinkedResources {
+		report.LinkedResources++
+		label := fmt.Sprintf("linked resource %d", i+1)
+		if !safeBundleRelative(resource.File) {
+			report.problem("ERROR", ref.slug+"/provenance.json", "%s has unsafe file path %q", label, resource.File)
+			continue
+		}
+		checkRegularFile(report, ref.absDir, ref.slug, resource.File)
+		data, readErr := os.ReadFile(filepath.Join(ref.absDir, filepath.FromSlash(resource.File))) //nolint:gosec // validated bundle-relative path
+		if readErr == nil && resource.SHA256 != "" {
+			digest := sha256.Sum256(data)
+			if fmt.Sprintf("%x", digest[:]) != resource.SHA256 {
+				report.problem("ERROR", ref.slug+"/"+resource.File, "SHA-256 does not match provenance")
+			}
+		}
+	}
+	for _, failure := range prov.LinkedFailures {
+		path := ref.slug + "/provenance.json"
+		if failure.URL != "" {
+			path = failure.URL
+		}
+		report.problem("WARN", path, "unpreserved linked %s resource: %s", failure.Kind, failure.Error)
 	}
 
 	if _, err := annotation.Load(ref.absDir); err != nil {

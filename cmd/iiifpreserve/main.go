@@ -492,8 +492,8 @@ func runDoctor(o *options, out, errOut *cliWriter) int {
 			out.line(line)
 		}
 	}
-	out.printf("iiifpreserve: doctor checked %d bundle(s), %d image(s), %d tile pyramid(s), %d file(s)\n",
-		report.Bundles, report.Images, report.TilePyramids, report.FilesChecked)
+	out.printf("iiifpreserve: doctor checked %d bundle(s), %d image(s), %d linked resource(s), %d tile pyramid(s), %d file(s)\n",
+		report.Bundles, report.Images, report.LinkedResources, report.TilePyramids, report.FilesChecked)
 	if !report.Healthy() || out.err != nil || errOut.err != nil {
 		return 1
 	}
@@ -543,7 +543,10 @@ func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal sourc
 				progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
 					errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
 				})
-				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest, progress, preserve.WithPageRetries(pageRetries))
+				linkedProgress := preserve.WithLinkedProgress(func(e preserve.LinkedProgressEvent) {
+					errOut.printf("iiifpreserve: [linked %d] %s %s\n", e.Index, e.Action, e.URL)
+				})
+				sum, err := preserve.Preserve(ctx, fetcher, store, r.ManifestURL, r.Manifest, progress, linkedProgress, preserve.WithPageRetries(pageRetries))
 				if err != nil {
 					failures++
 					errOut.line("iiifpreserve: preserve", r.ManifestURL, "::", err)
@@ -556,8 +559,11 @@ func crawl(ctx context.Context, results iter.Seq[pipeline.Result], journal sourc
 				} else {
 					images += sum.Stored
 					completed = true
-					out.printf("  preserved %d image(s) to %s (reused %d, repaired %d)\n",
-						sum.Stored, sum.Dir, sum.Skipped, sum.Repaired)
+					out.printf("  preserved %d image(s) and %d linked resource(s) to %s (reused %d image(s), %d linked, repaired %d)\n",
+						sum.Stored, sum.LinkedStored, sum.Dir, sum.Skipped, sum.LinkedSkipped, sum.Repaired)
+					for _, warning := range sum.LinkedFailures {
+						errOut.line("iiifpreserve: WARNING linked resource", r.ManifestURL, "::", warning)
+					}
 				}
 			}
 		}
@@ -590,7 +596,11 @@ func dryRunLine(manifest []byte) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	return len(imgs), fmt.Sprintf("  %d image(s) (dry-run, not stored)\n", len(imgs)), nil
+	linked, err := preserve.DiscoverLinkedResources(manifest)
+	if err != nil {
+		return 0, "", err
+	}
+	return len(imgs), fmt.Sprintf("  %d image(s), %d linked resource reference(s) (dry-run, not stored)\n", len(imgs), len(linked)), nil
 }
 
 // runSummary is the final one-line tally. A dry run reports the images it
@@ -648,7 +658,12 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 			errOut.line("iiifpreserve: enumerating images:", err)
 			return 1
 		}
-		out.printf("iiifpreserve: %s — %d image(s) (dry-run, not stored)\n", manifestURL, len(images))
+		linked, linkedErr := preserve.DiscoverLinkedResources(body)
+		if linkedErr != nil {
+			errOut.line("iiifpreserve: enumerating linked resources:", linkedErr)
+			return 1
+		}
+		out.printf("iiifpreserve: %s — %d image(s), %d linked resource reference(s) (dry-run, not stored)\n", manifestURL, len(images), len(linked))
 		if out.err != nil {
 			return 1
 		}
@@ -663,13 +678,19 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
 		errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
 	})
-	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), manifestURL, body, progress, preserve.WithPageRetries(o.pageRetries))
+	linkedProgress := preserve.WithLinkedProgress(func(e preserve.LinkedProgressEvent) {
+		errOut.printf("iiifpreserve: [linked %d] %s %s\n", e.Index, e.Action, e.URL)
+	})
+	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), manifestURL, body, progress, linkedProgress, preserve.WithPageRetries(o.pageRetries))
 	if err != nil {
 		errOut.line("iiifpreserve:", err)
 		return 1
 	}
-	out.printf("iiifpreserve: preserved %d image(s) to %s/%s (reused %d, repaired %d)\n",
-		sum.Stored, o.store, sum.Dir, sum.Skipped, sum.Repaired)
+	out.printf("iiifpreserve: preserved %d image(s) and %d linked resource(s) to %s/%s (reused %d image(s), %d linked, repaired %d)\n",
+		sum.Stored, sum.LinkedStored, o.store, sum.Dir, sum.Skipped, sum.LinkedSkipped, sum.Repaired)
+	for _, warning := range sum.LinkedFailures {
+		errOut.line("iiifpreserve: WARNING linked resource:", warning)
+	}
 	if out.err != nil || errOut.err != nil {
 		return 1
 	}

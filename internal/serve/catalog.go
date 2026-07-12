@@ -272,8 +272,7 @@ func (c *catalog) refreshSources() (changes int) {
 		return 0 // a transient scan failure must never erase the live catalogue
 	}
 	for _, ref := range refs {
-		stamp := fileStamp(filepath.Join(ref.absDir, "manifest.json")) + ":" +
-			fileStamp(filepath.Join(ref.absDir, "provenance.json"))
+		stamp := activeManifestStamp(ref.absDir)
 		old, existed := current[ref.slug]
 		switch {
 		case strings.HasSuffix(stamp, ":-") && existed:

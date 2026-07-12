@@ -393,9 +393,8 @@ func (s *Server) manifestSummaries() []manifestSummary {
 func summaryFor(absDir, slug string) manifestSummary {
 	ms := manifestSummary{Dir: slug, Languages: "—", Institution: "—"}
 
-	manifestPath := filepath.Join(absDir, "manifest.json")
 	provenancePath := filepath.Join(absDir, "provenance.json")
-	mb, _ := os.ReadFile(manifestPath) //nolint:gosec // G304: manifest under the served root
+	mb, _, manifestPath, _ := activeManifest(absDir)
 	ms.SourceTitle = metadata.Title(mb)
 	if ms.SourceTitle == "" {
 		ms.SourceTitle = ms.Dir

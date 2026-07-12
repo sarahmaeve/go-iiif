@@ -1,6 +1,8 @@
 package serve
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +61,83 @@ func TestDiagnoseLibraryHealthyBundle(t *testing.T) {
 	}
 	if len(report.Problems) != 1 || report.Problems[0].Severity != "WARN" || !strings.Contains(report.Problems[0].Message, "index is absent") {
 		t.Fatalf("expected only absent-catalogue warning, got %#v", report.Problems)
+	}
+}
+
+func TestDiagnoseLibraryChecksSelectedManifestVersion(t *testing.T) {
+	root, bundle := writeDoctorBundle(t, false)
+	version := filepath.Join(bundle, "manifest-versions", "refresh.json")
+	if err := os.MkdirAll(filepath.Dir(version), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(version, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov := `{"manifest_file":"manifest-versions/refresh.json","images":[{"file":"0001.jpg","service_id":"https://example.org/image"}]}`
+	if err := os.WriteFile(filepath.Join(bundle, "provenance.json"), []byte(prov), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := DiagnoseLibrary(root)
+	if report.Healthy() {
+		t.Fatalf("invalid selected manifest was not diagnosed: %+v", report)
+	}
+	found := false
+	for _, problem := range report.Problems {
+		if strings.Contains(problem.Path, "manifest-versions/refresh.json") && strings.Contains(problem.Message, "invalid JSON") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("selected manifest finding absent: %+v", report.Problems)
+	}
+}
+
+func TestDiagnoseLibraryChecksLinkedResourceChecksum(t *testing.T) {
+	root, bundle := writeDoctorBundle(t, false)
+	resource := []byte("recognized text")
+	digest := sha256.Sum256(resource)
+	resourcePath := filepath.Join(bundle, "resources", "ocr.txt")
+	if err := os.MkdirAll(filepath.Dir(resourcePath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resourcePath, resource, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov := fmt.Sprintf(`{"images":[{"file":"0001.jpg"}],"linked_resources":[{"url":"https://example.org/ocr.txt","file":"resources/ocr.txt","kind":"content","sha256":"%x"}]}`, digest[:])
+	if err := os.WriteFile(filepath.Join(bundle, "provenance.json"), []byte(prov), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := DiagnoseLibrary(root)
+	if !report.Healthy() || report.LinkedResources != 1 {
+		t.Fatalf("healthy linked resource report = %+v problems=%+v", report, report.Problems)
+	}
+	if err := os.WriteFile(resourcePath, []byte("altered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report = DiagnoseLibrary(root)
+	if report.Healthy() {
+		t.Fatalf("altered linked resource was not detected: %+v", report.Problems)
+	}
+}
+
+func TestDiagnoseLibraryWarnsAboutManifestLinkNotYetPreserved(t *testing.T) {
+	root, bundle := writeDoctorBundle(t, false)
+	manifest := `{"type":"Manifest","items":[],"annotations":[{"id":"https://example.org/ocr/page1","type":"AnnotationPage"}]}`
+	if err := os.WriteFile(filepath.Join(bundle, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report := DiagnoseLibrary(root)
+	if !report.Healthy() {
+		t.Fatalf("missing optional linked resource should warn, not fail: %+v", report.Problems)
+	}
+	found := false
+	for _, problem := range report.Problems {
+		if problem.Severity == "WARN" && strings.Contains(problem.Message, "not preserved") && strings.Contains(problem.Message, "/ocr/page1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing linked-resource warning absent: %+v", report.Problems)
 	}
 }
 

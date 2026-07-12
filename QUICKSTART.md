@@ -175,8 +175,9 @@ and tags, and sorted by archive path, title, institution, or page count. Open
 notes, or comma-separated tags; these fields persist across server restarts
 and library refreshes.
 
-To verify the complete local library—including every image and tile promised
-by its IIIF metadata—run the read-only doctor:
+To verify the complete local library—including every image, linked OCR or
+annotation resource, and tile promised by its IIIF metadata—run the read-only
+doctor:
 
 ```sh
 iiifpreserve -doctor
@@ -185,7 +186,9 @@ iiifpreserve -doctor
 
 Warnings do not fail the check. Missing, empty, corrupt, or unsafe referenced
 files are reported as errors and produce a non-zero exit status; doctor never
-modifies the library.
+modifies the library. A warning that a manifest-declared linked resource is
+not preserved identifies an older bundle that can be rerun to backfill it;
+unchanged page images are reused without image requests.
 
 ## Exchange research metadata
 
@@ -215,18 +218,28 @@ the import.
 
 Under `~/iiif-images/<host>/<slug>/`:
 
-- `manifest.json` — the acquired manifest, stored unmodified (rewritten to
+- `manifest.json` — the acquired manifest, stored unmodified and never
+  replaced (rewritten to
   local URLs only at serve time). It is the upstream original for normal URL
   and file ingestion; LOC's documented fallback is explicitly derived from
   the official item JSON API.
+- `manifest-versions/` — non-destructive later observations, created only
+  when an upstream manifest changes; `provenance.json` atomically selects the
+  active version after a complete safe refresh.
 - `NNNN.jpg` — each page at full size
 - `NNNN/` — its IIIF level-0 tile pyramid + `info.json` (deep zoom)
+- `resources/` — preserved upstream AnnotationPages/AnnotationLists, external
+  OCR or text bodies, and `seeAlso` resources such as ALTO or TEI; JSON links
+  are localized only while serving, while stored bytes remain original
 - `provenance.json` — source URLs, recorded license, tile records
 - `.iiifpreserve/catalog.json` at the library root — catalogue overrides,
   notes, tags, and cached sizes
 
 It's durable, offline, and re-servable from anywhere — the rewrite is
 request-relative, so the library works no matter where it lives.
+External rights or license changes are retained as provenance but never hide
+or disable locally preserved images. A refresh that would remove a previously
+preserved image is rejected.
 
 ## Next steps
 

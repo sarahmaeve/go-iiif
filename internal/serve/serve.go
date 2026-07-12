@@ -132,6 +132,9 @@ func (s *Server) Handler() http.Handler {
 		case strings.HasSuffix(clean, "/info.json"):
 			s.serveInfoJSON(w, r, files)
 			return
+		case strings.Contains(clean, "/resources/") && strings.HasSuffix(clean, ".json"):
+			s.serveLinkedJSON(w, r, clean, files)
+			return
 		}
 		// A "/<dir>/" request for a preserved manifest renders the embedded
 		// Mirador viewer instead of the stdlib directory listing.
@@ -147,6 +150,41 @@ func (s *Server) Handler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) serveLinkedJSON(w http.ResponseWriter, r *http.Request, clean string, files http.Handler) {
+	marker := "/resources/"
+	i := strings.LastIndex(clean, marker)
+	if i <= 0 {
+		files.ServeHTTP(w, r)
+		return
+	}
+	bundlePath := clean[:i]
+	absBundle := filepath.Join(s.root, filepath.FromSlash(strings.TrimPrefix(bundlePath, "/")))
+	provenance, err := os.ReadFile(filepath.Join(absBundle, "provenance.json")) //nolint:gosec // derived bundle path under configured root
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+	resourceRel := strings.TrimPrefix(clean[i+1:], "/")
+	resourcePath := filepath.Join(absBundle, filepath.FromSlash(resourceRel))
+	document, err := os.ReadFile(resourcePath) //nolint:gosec // cleaned request path under derived bundle
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	base := scheme + "://" + r.Host + bundlePath
+	out, err := rewriteLinkedJSON(document, provenance, base)
+	if err != nil {
+		files.ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out) //nolint:errcheck // best-effort response write
 }
 
 // serveInfoJSON serves a stored level0 info.json with its `id` set to the
@@ -362,7 +400,6 @@ func (s *Server) handleAnnotations(w http.ResponseWriter, r *http.Request, clean
 // this server. If provenance is absent or rewrite fails, it falls back to
 // serving the manifest untouched — serving must not break on a rewrite issue.
 func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files http.Handler) {
-	dir := http.Dir(s.root)
 	clean := path.Clean(r.URL.Path)
 	bundlePath := path.Dir(clean)
 	absBundle := filepath.Join(s.root, filepath.FromSlash(bundlePath))
@@ -372,8 +409,7 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 		scheme = "https"
 	}
 	base := scheme + "://" + r.Host + strings.TrimSuffix(clean, "/manifest.json")
-	stamp := fileStamp(filepath.Join(absBundle, "manifest.json")) + ":" +
-		fileStamp(filepath.Join(absBundle, "provenance.json"))
+	stamp := activeManifestStamp(absBundle)
 	cacheKey := base
 	if cached, ok := s.manifestCache.get(cacheKey, stamp); ok {
 		w.Header().Set("Content-Type", "application/json")
@@ -381,22 +417,14 @@ func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request, files htt
 		return
 	}
 
-	mf, err := dir.Open(clean)
+	manifest, prov, _, err := activeManifest(absBundle)
 	if err != nil {
 		files.ServeHTTP(w, r) // let the file server produce the 404
 		return
 	}
-	manifest, err := io.ReadAll(mf)
-	_ = mf.Close()
-	if err != nil {
-		files.ServeHTTP(w, r)
-		return
-	}
 
 	out := manifest
-	if pf, perr := dir.Open(path.Join(bundlePath, "provenance.json")); perr == nil {
-		prov, _ := io.ReadAll(pf)
-		_ = pf.Close()
+	if len(prov) > 0 {
 		if rw, rerr := rewriteManifest(manifest, prov, base, absBundle); rerr == nil {
 			out = rw
 		}

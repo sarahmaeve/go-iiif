@@ -173,8 +173,8 @@ func (s *Server) comparisonSelectionWithCanvases(raw, requestedCanvases []string
 		if !ok {
 			return nil, nil, fmt.Errorf("unknown manuscript %q", slug)
 		}
-		manifestPath := filepath.Join(s.root, filepath.FromSlash(slug), "manifest.json")
-		manifest, err := os.ReadFile(manifestPath) //nolint:gosec // slug was resolved through the catalogue and confined above
+		bundleDir := filepath.Join(s.root, filepath.FromSlash(slug))
+		manifest, _, _, err := activeManifest(bundleDir)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, nil, fmt.Errorf("manuscript %q is no longer available", slug)

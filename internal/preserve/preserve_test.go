@@ -117,6 +117,129 @@ func TestPreserve_IdempotentSkipsExisting(t *testing.T) {
 	}
 }
 
+func TestPreserve_MetadataOnlyRefreshReusesImagesAndVersionsManifest(t *testing.T) {
+	const manifestURL = "https://g.example/iiif/ms/manifest.json"
+	const original = `{"label":"Original","license":"https://rights.example/old","sequences":[{"canvases":[{"@id":"https://g.example/canvas/1","images":[{"resource":{"service":{"@id":"https://g.example/iiif/img1"}}}]}]}]}`
+	const refreshed = `{"label":"Revised","license":"https://rights.example/new","sequences":[{"canvases":[{"@id":"https://g.example/canvas/1","images":[{"resource":{"service":{"@id":"https://g.example/iiif/img1"}}}]}]}]}`
+	root := t.TempDir()
+	store := NewLocalBlobStore(root)
+	image := synthJPEG(t, 32, 24)
+	if _, err := Preserve(t.Context(), &countFetcher{image: image}, store, manifestURL, []byte(original)); err != nil {
+		t.Fatalf("initial Preserve: %v", err)
+	}
+
+	fetcher := &countFetcher{image: image}
+	sum, err := Preserve(t.Context(), fetcher, store, manifestURL, []byte(refreshed))
+	if err != nil {
+		t.Fatalf("metadata refresh: %v", err)
+	}
+	if len(fetcher.calls) != 0 || sum.Skipped != 1 || sum.Stored != 0 {
+		t.Fatalf("calls=%v summary=%+v; metadata-only refresh must reuse the image", fetcher.calls, sum)
+	}
+
+	dir := dirFor(manifestURL)
+	acquisition, err := store.Get(t.Context(), dir+"/manifest.json")
+	if err != nil || string(acquisition) != original {
+		t.Fatalf("immutable acquisition manifest = %q, %v", acquisition, err)
+	}
+	provBytes, err := store.Get(t.Context(), dir+"/provenance.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prov provenance
+	if err := json.Unmarshal(provBytes, &prov); err != nil || prov.ManifestFile == "" {
+		t.Fatalf("refresh provenance = %+v, %v; want selected version", prov, err)
+	}
+	active, err := store.Get(t.Context(), dir+"/"+prov.ManifestFile)
+	if err != nil || string(active) != refreshed {
+		t.Fatalf("active refreshed manifest = %q, %v", active, err)
+	}
+}
+
+func TestPreserve_ReorderedImagesReuseByIdentity(t *testing.T) {
+	const manifestURL = "https://g.example/iiif/ms/manifest.json"
+	original := v2ImageManifest("img1", "img2")
+	reordered := v2ImageManifest("img2", "img1")
+	store := NewLocalBlobStore(t.TempDir())
+	image := synthJPEG(t, 32, 24)
+	if _, err := Preserve(t.Context(), &countFetcher{image: image}, store, manifestURL, []byte(original)); err != nil {
+		t.Fatalf("initial Preserve: %v", err)
+	}
+
+	fetcher := &countFetcher{image: image}
+	sum, err := Preserve(t.Context(), fetcher, store, manifestURL, []byte(reordered))
+	if err != nil {
+		t.Fatalf("reordered Preserve: %v", err)
+	}
+	if len(fetcher.calls) != 0 || sum.Skipped != 2 || sum.Stored != 0 {
+		t.Fatalf("calls=%v summary=%+v; reorder should reuse both images", fetcher.calls, sum)
+	}
+	provBytes, _ := store.Get(t.Context(), dirFor(manifestURL)+"/provenance.json")
+	var prov provenance
+	_ = json.Unmarshal(provBytes, &prov)
+	if len(prov.Images) != 2 || prov.Images[0].ServiceID != "https://g.example/iiif/img2" ||
+		prov.Images[0].File != "0002.jpg" || prov.Images[1].File != "0001.jpg" {
+		t.Fatalf("reordered provenance = %+v", prov.Images)
+	}
+}
+
+func TestPreserve_AdditionFetchesOnlyNewImage(t *testing.T) {
+	const manifestURL = "https://g.example/iiif/ms/manifest.json"
+	store := NewLocalBlobStore(t.TempDir())
+	image := synthJPEG(t, 32, 24)
+	if _, err := Preserve(t.Context(), &countFetcher{image: image}, store, manifestURL, []byte(v2ImageManifest("img1"))); err != nil {
+		t.Fatalf("initial Preserve: %v", err)
+	}
+
+	fetcher := &countFetcher{image: image}
+	sum, err := Preserve(t.Context(), fetcher, store, manifestURL, []byte(v2ImageManifest("img1", "img2")))
+	if err != nil {
+		t.Fatalf("additive Preserve: %v", err)
+	}
+	if sum.Skipped != 1 || sum.Stored != 1 || fetcher.count("/full/full/") != 1 {
+		t.Fatalf("calls=%v summary=%+v; want one reused and one fetched", fetcher.calls, sum)
+	}
+	for _, call := range fetcher.calls {
+		if strings.Contains(call, "img1") {
+			t.Fatalf("unchanged image requested during refresh: %v", fetcher.calls)
+		}
+	}
+}
+
+func TestPreserve_RefreshCannotRemoveOrReplaceStoredImage(t *testing.T) {
+	const manifestURL = "https://g.example/iiif/ms/manifest.json"
+	store := NewLocalBlobStore(t.TempDir())
+	image := synthJPEG(t, 32, 24)
+	if _, err := Preserve(t.Context(), &countFetcher{image: image}, store, manifestURL, []byte(v2ImageManifest("img1", "img2"))); err != nil {
+		t.Fatalf("initial Preserve: %v", err)
+	}
+	dir := dirFor(manifestURL)
+	priorProvenance, _ := store.Get(t.Context(), dir+"/provenance.json")
+
+	for _, candidate := range []string{v2ImageManifest("img1"), v2ImageManifest("img1", "img3")} {
+		fetcher := &countFetcher{image: image}
+		_, err := Preserve(t.Context(), fetcher, store, manifestURL, []byte(candidate))
+		if !errors.Is(err, ErrRefreshRemovesImages) {
+			t.Fatalf("refresh error = %v, want ErrRefreshRemovesImages", err)
+		}
+		if len(fetcher.calls) != 0 {
+			t.Fatalf("rejected refresh requested images: %v", fetcher.calls)
+		}
+		got, readErr := store.Get(t.Context(), dir+"/provenance.json")
+		if readErr != nil || !bytes.Equal(got, priorProvenance) {
+			t.Fatalf("rejected refresh changed committed snapshot: %v", readErr)
+		}
+	}
+}
+
+func v2ImageManifest(ids ...string) string {
+	var canvases []string
+	for _, id := range ids {
+		canvases = append(canvases, `{"@id":"https://g.example/canvas/`+id+`","images":[{"resource":{"service":{"@id":"https://g.example/iiif/`+id+`"}}}]}`)
+	}
+	return `{"sequences":[{"canvases":[` + strings.Join(canvases, ",") + `]}]}`
+}
+
 // realJPEG serves a decodable 600x400 image for any image URL (so tiling
 // runs), and the manifest for the manifest URL.
 type realJPEG struct {
@@ -289,24 +412,28 @@ func TestPreserve_RefetchesCorruptExistingPage(t *testing.T) {
 	}
 }
 
-func TestPreserve_IncompleteBundleHasNoProvenance(t *testing.T) {
+func TestPreserve_FailedRefreshKeepsCommittedProvenance(t *testing.T) {
 	const manifestURL = "https://g.example/iiif/ms/manifest.json"
-	const manifest = `{"sequences":[{"canvases":[{"images":[{"resource":{"service":{"@id":"https://g.example/iiif/missing"}}}]}]}]}`
+	original := v2ImageManifest("img1")
+	refreshed := v2ImageManifest("img1", "missing")
 	root := t.TempDir()
 	store := NewLocalBlobStore(root)
 	dir := dirFor(manifestURL)
-	if err := store.Put(context.Background(), dir+"/provenance.json", []byte(`{"manifest_url":"stale","images":[]}`)); err != nil {
-		t.Fatal(err)
+	if _, err := Preserve(t.Context(), &countFetcher{image: synthJPEG(t, 32, 24)}, store, manifestURL, []byte(original)); err != nil {
+		t.Fatalf("initial Preserve: %v", err)
 	}
-	_, err := Preserve(context.Background(), seqFetcher{}, store, manifestURL, []byte(manifest))
+	priorProvenance, _ := store.Get(t.Context(), dir+"/provenance.json")
+	priorManifest, _ := store.Get(t.Context(), dir+"/manifest.json")
+
+	_, err := Preserve(context.Background(), seqFetcher{}, store, manifestURL, []byte(refreshed))
 	if !errors.Is(err, ErrIncomplete) {
 		t.Fatalf("Preserve error = %v, want ErrIncomplete", err)
 	}
-	if ok, statErr := store.Exists(context.Background(), dir+"/provenance.json"); statErr != nil || ok {
-		t.Fatalf("completion marker after failed run = %v, %v; want absent", ok, statErr)
+	if got, readErr := store.Get(context.Background(), dir+"/provenance.json"); readErr != nil || !bytes.Equal(got, priorProvenance) {
+		t.Fatalf("completion marker changed after failed refresh: %v", readErr)
 	}
-	if ok, statErr := store.Exists(context.Background(), dir+"/manifest.json"); statErr != nil || !ok {
-		t.Fatalf("restart manifest = %v, %v; want preserved", ok, statErr)
+	if got, readErr := store.Get(context.Background(), dir+"/manifest.json"); readErr != nil || !bytes.Equal(got, priorManifest) {
+		t.Fatalf("acquisition manifest changed after failed refresh: %v", readErr)
 	}
 }
 

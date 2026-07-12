@@ -165,12 +165,38 @@ local JPEG. Tiling is best-effort. `provenance.json` is written last only when
 all required page images succeed, making it the atomic bundle completion
 marker used by the catalogue.
 
-The acquired `manifest.json` bytes are stored **unmodified**
+The acquired `manifest.json` bytes are stored **unmodified and immutable**
 (fidelity/provenance); rewriting happens at serve time (§4.5), not on disk.
 For `-manifest-file` and ordinary remote manifests those are the original
 upstream bytes. The documented LOC fallback is the explicit exception: its
 acquired bytes are a derived Presentation 3 manifest linked to the official
 source item JSON with `seeAlso`.
+
+A later preservation run is a non-destructive refresh. Existing JPEGs and
+tile pyramids are matched by their recorded image-service identity, so label,
+metadata, rights, or canvas-order changes make no image requests. Changed
+manifest bytes are staged under `manifest-versions/`; the final atomic
+`provenance.json` write selects the active version. A failed refresh therefore
+leaves the previously committed bundle visible. Refresh is monotonic: an
+upstream manifest that removes or replaces a preserved image is rejected and
+cannot suppress locally stored content. Rights and license values are recorded
+as provenance, never enforced as local access policy.
+
+Preservation also inventories and fetches external Presentation 2
+`otherContent` AnnotationLists, Presentation 3 `annotations` AnnotationPages,
+paginated `supplementary` AnnotationCollections, external non-image bodies
+reached from those documents or embedded annotations (including
+Choice/SpecificResource alternatives), and machine-readable `seeAlso`
+resources (including ALTO/TEI/XML/text). Raw bytes live under
+`resources/` with SHA-256 recorded in provenance. Serve-time rewriting points
+the manifest and fetched JSON documents at their local copies. These resources
+are additive and best-effort: an unavailable OCR or annotation link is
+recorded as a warning and never prevents an otherwise complete image bundle
+from remaining visible. Doctor verifies their files/checksums and reports
+manifest links absent from older provenance. AnnotationList/AnnotationPage
+responses must be valid JSON before they are activated. Resource filenames are
+URL-deterministic, so a cancelled backfill reuses files staged before the
+atomic provenance commit rather than requesting them again.
 
 ### 4.5 Serving (built)
 A static HTTPS file server over the BlobStore tree (stdlib only;
@@ -181,7 +207,8 @@ no TLS flags after a one-time `mkcert -install` + generate; a missing
 cert prints the exact recipe; `-no-tls` debug escape; loopback-only;
 graceful shutdown). A request for `*/manifest.json`
 is **rewritten on the fly**: `rewriteManifest` reads the sibling
-`provenance.json`, and for every preserved image points its resource id at
+`provenance.json`, selects any atomically committed versioned manifest, and
+for every preserved image points its resource id at
 `<server>/<dir>/NNNN.jpg` and sets `format: image/jpeg`. If a tile pyramid
 was built (`tile_dir`), it **re-points** the IIIF Image API `service` at the
 local `<server>/<dir>/NNNN` (`ImageService3`, `level0`) so the viewer deep-

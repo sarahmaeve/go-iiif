@@ -13,12 +13,62 @@ import (
 // provenanceDoc mirrors the subset of internal/preserve's provenance.json the
 // rewrite needs: which local file each original image came from.
 type provenanceDoc struct {
-	Images []struct {
+	ManifestFile string `json:"manifest_file,omitempty"`
+	Images       []struct {
 		File      string `json:"file"`
 		ServiceID string `json:"service_id"`
 		SourceURL string `json:"source_url"`
 		TileDir   string `json:"tile_dir,omitempty"`
 	} `json:"images"`
+	LinkedResources []struct {
+		URL    string `json:"url"`
+		File   string `json:"file"`
+		Kind   string `json:"kind"`
+		Format string `json:"format,omitempty"`
+		SHA256 string `json:"sha256"`
+	} `json:"linked_resources,omitempty"`
+	LinkedFailures []struct {
+		URL   string `json:"url,omitempty"`
+		Kind  string `json:"kind,omitempty"`
+		Error string `json:"error"`
+	} `json:"linked_failures,omitempty"`
+}
+
+// activeManifest reads the immutable acquisition manifest or, after a
+// successful refresh, the versioned manifest selected by provenance. The
+// provenance file is the single atomic snapshot pointer.
+func activeManifest(bundleDir string) (manifest, provenance []byte, manifestPath string, err error) {
+	provenance, provErr := os.ReadFile(filepath.Join(bundleDir, "provenance.json")) //nolint:gosec // fixed bundle sibling
+	if provErr != nil {
+		provenance = nil
+	}
+	manifestPath = selectedManifestPath(bundleDir, provenance)
+	manifest, err = os.ReadFile(manifestPath) //nolint:gosec // selected path is confined below bundleDir
+	return manifest, provenance, manifestPath, err
+}
+
+func selectedManifestPath(bundleDir string, provenance []byte) string {
+	manifestPath := filepath.Join(bundleDir, "manifest.json")
+	var prov provenanceDoc
+	if json.Unmarshal(provenance, &prov) == nil && safeManifestFile(prov.ManifestFile) {
+		manifestPath = filepath.Join(bundleDir, filepath.FromSlash(prov.ManifestFile))
+	}
+	return manifestPath
+}
+
+func safeManifestFile(name string) bool {
+	if name == "" {
+		return false
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	return !filepath.IsAbs(clean) && clean != "." && clean != ".." &&
+		!strings.HasPrefix(clean, ".."+string(filepath.Separator)) && strings.HasSuffix(clean, ".json")
+}
+
+func activeManifestStamp(bundleDir string) string {
+	provenancePath := filepath.Join(bundleDir, "provenance.json")
+	provenance, _ := os.ReadFile(provenancePath) //nolint:gosec // fixed bundle sibling
+	return fileStamp(selectedManifestPath(bundleDir, provenance)) + ":" + fileStamp(provenancePath)
 }
 
 // localTarget is where a preserved image is re-pointed: the flat JPEG URL,
@@ -97,6 +147,7 @@ func rewriteManifest(manifest, provenance []byte, base, bundleDir string) ([]byt
 		return nil, fmt.Errorf("serve: decoding manifest: %w", err)
 	}
 	rewriteNode(doc, nil, local)
+	rewriteLinkedReferences(doc, strings.TrimRight(base, "/"), prov)
 	stripRemoteThumbnails(doc, strings.TrimRight(base, "/"))
 
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -104,6 +155,57 @@ func rewriteManifest(manifest, provenance []byte, base, bundleDir string) ([]byt
 		return nil, fmt.Errorf("serve: encoding rewritten manifest: %w", err)
 	}
 	return out, nil
+}
+
+// rewriteLinkedReferences localizes exact URLs for preserved AnnotationPages,
+// OCR/text bodies, and seeAlso documents. Exact matching avoids treating
+// arbitrary identifiers or URL prefixes as downloadable content.
+func rewriteLinkedReferences(node any, base string, prov provenanceDoc) {
+	local := make(map[string]string, len(prov.LinkedResources))
+	for _, resource := range prov.LinkedResources {
+		if resource.URL != "" && resource.File != "" {
+			local[resource.URL] = base + "/" + resource.File
+		}
+	}
+	var walk func(any)
+	walk = func(value any) {
+		switch v := value.(type) {
+		case map[string]any:
+			for key, child := range v {
+				if raw, ok := child.(string); ok {
+					if replacement := local[raw]; replacement != "" {
+						v[key] = replacement
+					}
+					continue
+				}
+				walk(child)
+			}
+		case []any:
+			for i, child := range v {
+				if raw, ok := child.(string); ok {
+					if replacement := local[raw]; replacement != "" {
+						v[i] = replacement
+					}
+					continue
+				}
+				walk(child)
+			}
+		}
+	}
+	walk(node)
+}
+
+func rewriteLinkedJSON(document, provenance []byte, base string) ([]byte, error) {
+	var prov provenanceDoc
+	if err := json.Unmarshal(provenance, &prov); err != nil {
+		return nil, err
+	}
+	var doc any
+	if err := json.Unmarshal(document, &doc); err != nil {
+		return nil, err
+	}
+	rewriteLinkedReferences(doc, strings.TrimRight(base, "/"), prov)
+	return json.MarshalIndent(doc, "", "  ")
 }
 
 // isCanvas reports whether a decoded node is a IIIF Canvas (v3 "Canvas" or

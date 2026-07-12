@@ -14,6 +14,7 @@ type ImageResource struct {
 	// ServiceID is the IIIF Image API base URL, or a static image URL when
 	// the institution does not implement the Image API.
 	ServiceID string
+	CanvasID  string
 	Width     int
 	Height    int
 	Label     string
@@ -35,6 +36,7 @@ func (h idHolder) id() string {
 type v2Manifest struct {
 	Sequences []struct {
 		Canvases []struct {
+			idHolder
 			Label  json.RawMessage `json:"label"`
 			Images []struct {
 				Resource imageResource `json:"resource"`
@@ -45,6 +47,7 @@ type v2Manifest struct {
 
 type v3Manifest struct {
 	Items []struct { // canvases
+		idHolder
 		Items []struct { // annotation pages
 			Items []struct { // annotations
 				Body imageResource `json:"body"`
@@ -98,6 +101,7 @@ func EnumerateImages(manifest []byte) ([]ImageResource, error) {
 			for _, img := range canvas.Images {
 				out = append(out, ImageResource{
 					ServiceID: img.Resource.serviceID(),
+					CanvasID:  canvas.id(),
 					Width:     img.Resource.Width,
 					Height:    img.Resource.Height,
 					Label:     presentationLabel(canvas.Label),
@@ -120,6 +124,7 @@ func EnumerateImages(manifest []byte) ([]ImageResource, error) {
 			for _, anno := range page.Items {
 				out = append(out, ImageResource{
 					ServiceID: anno.Body.serviceID(),
+					CanvasID:  canvas.id(),
 					Width:     anno.Body.Width,
 					Height:    anno.Body.Height,
 				})

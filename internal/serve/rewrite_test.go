@@ -8,6 +8,65 @@ import (
 	"testing"
 )
 
+func TestActiveManifestUsesAtomicProvenanceSelection(t *testing.T) {
+	bundle := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bundle, "manifest.json"), []byte(`{"label":"acquired"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	versionDir := filepath.Join(bundle, "manifest-versions")
+	if err := os.MkdirAll(versionDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "refresh.json"), []byte(`{"label":"refreshed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, _, path, err := activeManifest(bundle)
+	if err != nil || string(manifest) != `{"label":"acquired"}` || filepath.Base(path) != "manifest.json" {
+		t.Fatalf("before commit: manifest=%q path=%q err=%v", manifest, path, err)
+	}
+	prov := []byte(`{"manifest_file":"manifest-versions/refresh.json","images":[]}`)
+	if err := os.WriteFile(filepath.Join(bundle, "provenance.json"), prov, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, _, path, err = activeManifest(bundle)
+	if err != nil || string(manifest) != `{"label":"refreshed"}` || filepath.Base(path) != "refresh.json" {
+		t.Fatalf("after commit: manifest=%q path=%q err=%v", manifest, path, err)
+	}
+}
+
+func TestRewriteManifestAndAnnotationPageLocalizeLinkedResources(t *testing.T) {
+	manifest := []byte(`{
+	  "annotations":[{"id":"https://remote.example/page1","type":"AnnotationPage"}],
+	  "seeAlso":[{"id":"https://remote.example/book.xml","type":"Dataset"}]
+	}`)
+	provenance := []byte(`{"linked_resources":[
+	  {"url":"https://remote.example/page1","file":"resources/page1.json","kind":"annotation","sha256":"x"},
+	  {"url":"https://remote.example/text.txt","file":"resources/text.txt","kind":"content","sha256":"x"},
+	  {"url":"https://remote.example/book.xml","file":"resources/book.xml","kind":"seeAlso","sha256":"x"}
+	]}`)
+	const base = "https://local.example/bundle"
+	out, err := rewriteManifest(manifest, provenance, base, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "remote.example") ||
+		!strings.Contains(string(out), base+"/resources/page1.json") ||
+		!strings.Contains(string(out), base+"/resources/book.xml") {
+		t.Fatalf("linked manifest resources not localized:\n%s", out)
+	}
+
+	page := []byte(`{"id":"https://remote.example/page1","type":"AnnotationPage","items":[{"body":{"id":"https://remote.example/text.txt","type":"Text"}}]}`)
+	localizedPage, err := rewriteLinkedJSON(page, provenance, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(localizedPage), "remote.example") ||
+		!strings.Contains(string(localizedPage), base+"/resources/text.txt") {
+		t.Fatalf("annotation body not localized:\n%s", localizedPage)
+	}
+}
+
 // A thumbnail pointing at a non-preserved remote service (Gallica uses a
 // different path than the image service) would 404 offline. The rewrite
 // drops any non-local thumbnail so nothing broken is requested offline.

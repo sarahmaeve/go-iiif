@@ -3,6 +3,7 @@ package preserve
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,14 +16,18 @@ import (
 
 // Summary reports the outcome of preserving one manifest.
 type Summary struct {
-	ManifestURL string
-	Dir         string // BlobStore key prefix the bundle was written under
-	Images      int    // canvas images found
-	Stored      int    // images newly fetched and stored
-	Skipped     int    // images already present (idempotent re-run)
-	Repaired    int    // existing images whose missing tile pyramids were rebuilt
-	Tiled       int    // images for which a level0 tile pyramid was built
-	Failures    []string
+	ManifestURL    string
+	Dir            string // BlobStore key prefix the bundle was written under
+	Images         int    // canvas images found
+	Stored         int    // images newly fetched and stored
+	Skipped        int    // images already present (idempotent re-run)
+	Repaired       int    // existing images whose missing tile pyramids were rebuilt
+	Tiled          int    // images for which a level0 tile pyramid was built
+	Failures       []string
+	Linked         int
+	LinkedStored   int
+	LinkedSkipped  int
+	LinkedFailures []string
 }
 
 // ErrIncomplete means one or more required page images could not be
@@ -30,21 +35,44 @@ type Summary struct {
 // but no final provenance completion marker is written.
 var ErrIncomplete = errors.New("preserve: bundle incomplete")
 
+// ErrRefreshRemovesImages means an upstream manifest no longer presents one
+// or more images in the committed local bundle. External changes must never
+// suppress already-preserved content, so such a manifest is not activated.
+var ErrRefreshRemovesImages = errors.New("preserve: refresh would hide preserved images")
+
 // defaultTileSize is the level0 tile edge. 512 balances file count against
 // zoom granularity and matches the common OpenSeadragon/Mirador default.
 const defaultTileSize = 512
 
 type provenance struct {
-	ManifestURL string          `json:"manifest_url"`
-	License     string          `json:"license,omitempty"`
-	Images      []provenanceImg `json:"images"`
+	ManifestURL     string                    `json:"manifest_url"`
+	ManifestFile    string                    `json:"manifest_file,omitempty"`
+	License         string                    `json:"license,omitempty"`
+	Images          []provenanceImg           `json:"images"`
+	LinkedResources []provenanceLinked        `json:"linked_resources,omitempty"`
+	LinkedFailures  []provenanceLinkedFailure `json:"linked_failures,omitempty"`
 }
 
 type provenanceImg struct {
 	File      string `json:"file"`
+	CanvasID  string `json:"canvas_id,omitempty"`
 	ServiceID string `json:"service_id"`
 	SourceURL string `json:"source_url"`
 	TileDir   string `json:"tile_dir,omitempty"` // level0 pyramid prefix, if built
+}
+
+type provenanceLinked struct {
+	URL    string `json:"url"`
+	File   string `json:"file"`
+	Kind   string `json:"kind"`
+	Format string `json:"format,omitempty"`
+	SHA256 string `json:"sha256"`
+}
+
+type provenanceLinkedFailure struct {
+	URL   string `json:"url,omitempty"`
+	Kind  string `json:"kind,omitempty"`
+	Error string `json:"error"`
 }
 
 var unsafeKeyChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -94,9 +122,17 @@ type ProgressEvent struct {
 	Action       string // "stored" | "skipped" | "repaired" | "failed"
 }
 
+type LinkedProgressEvent struct {
+	Index  int
+	URL    string
+	File   string
+	Action string // "stored" | "skipped" | "failed"
+}
+
 type preserveConfig struct {
-	progress    func(ProgressEvent)
-	pageRetries int
+	progress       func(ProgressEvent)
+	linkedProgress func(LinkedProgressEvent)
+	pageRetries    int
 }
 
 // Option configures Preserve.
@@ -105,6 +141,10 @@ type Option func(*preserveConfig)
 // WithProgress invokes fn once per image with its disposition.
 func WithProgress(fn func(ProgressEvent)) Option {
 	return func(c *preserveConfig) { c.progress = fn }
+}
+
+func WithLinkedProgress(fn func(LinkedProgressEvent)) Option {
+	return func(c *preserveConfig) { c.linkedProgress = fn }
 }
 
 // WithPageRetries retries a page this many additional times after all of its
@@ -145,24 +185,44 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		return sum, err
 	}
 	provenanceKey := dir + "/provenance.json"
-	previous, err := previousProvenance(ctx, store, provenanceKey)
+	previous, hadCommittedBundle, err := previousProvenance(ctx, store, provenanceKey)
 	if err != nil {
 		return sum, err
 	}
-	// provenance.json is the catalogue's completion marker. Invalidate it
-	// before changing the bundle so a crash or failed refresh cannot expose a
-	// partially updated manuscript as complete.
-	if err := store.Delete(ctx, provenanceKey); err != nil {
-		return sum, fmt.Errorf("preserve: invalidating completion marker: %w", err)
+	if hadCommittedBundle {
+		available := make(map[string]int, len(images))
+		for _, img := range images {
+			available[img.ServiceID]++
+		}
+		for _, old := range previous.Images {
+			if old.ServiceID == "" {
+				continue
+			}
+			if available[old.ServiceID] == 0 {
+				return sum, fmt.Errorf("%w: %s", ErrRefreshRemovesImages, old.ServiceID)
+			}
+			available[old.ServiceID]--
+		}
 	}
-
-	if err := store.Put(ctx, dir+"/manifest.json", manifestBytes); err != nil {
-		return sum, fmt.Errorf("preserve: storing manifest: %w", err)
+	// The acquisition manifest is immutable once a bundle is committed.
+	// Refresh manifests are staged under a versioned name and selected by the
+	// final atomic provenance write. Until then the old manifest, provenance,
+	// and images remain a coherent, viewable snapshot.
+	if !hadCommittedBundle {
+		if err := store.Put(ctx, dir+"/manifest.json", manifestBytes); err != nil {
+			return sum, fmt.Errorf("preserve: storing manifest: %w", err)
+		}
 	}
 
 	prov := provenance{
 		ManifestURL: manifestURL,
 		License:     extractLicense(manifestBytes),
+	}
+	previousByService := make(map[string][]provenanceImg)
+	for _, old := range previous.Images {
+		if old.ServiceID != "" {
+			previousByService[old.ServiceID] = append(previousByService[old.ServiceID], old)
+		}
 	}
 	// preferred remembers the size-variant that worked for this manifest so
 	// later pages skip re-probing a known-dead one (dominant cost under a
@@ -173,6 +233,21 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			return sum, err
 		}
 		file := fmt.Sprintf("%04d.jpg", i+1)
+		prefix := fmt.Sprintf("%04d", i+1)
+		var old provenanceImg
+		haveIdentityMatch := false
+		if matches := previousByService[img.ServiceID]; len(matches) > 0 {
+			old, haveIdentityMatch = matches[0], true
+			previousByService[img.ServiceID] = matches[1:]
+			file = old.File
+			if old.TileDir != "" {
+				prefix = old.TileDir
+			} else {
+				prefix = strings.TrimSuffix(old.File, filepathExt(old.File))
+			}
+		} else if hadCommittedBundle {
+			file, prefix = refreshedArtifactNames(img, i)
+		}
 		key := dir + "/" + file
 
 		exists, err := store.Exists(ctx, key)
@@ -181,7 +256,10 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			report(i+1, sum.Images, file, "failed")
 			continue
 		}
-		if exists {
+		// With committed provenance, an ordinal file is reusable only when its
+		// recorded image identity matches. Without provenance it remains a safe
+		// restart checkpoint for the same in-progress acquisition.
+		if exists && (haveIdentityMatch || !hadCommittedBundle) {
 			data, readErr := store.Get(ctx, key)
 			if readErr != nil {
 				sum.Failures = append(sum.Failures, fmt.Sprintf("%s: %v", file, readErr))
@@ -190,11 +268,10 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			}
 			if _, decodeErr := jpeg.DecodeConfig(bytes.NewReader(data)); decodeErr == nil {
 				sum.Skipped++
-				entry := provenanceImg{File: file, ServiceID: img.ServiceID}
-				if old, ok := previous[file]; ok && old.ServiceID == img.ServiceID {
+				entry := provenanceImg{File: file, CanvasID: img.CanvasID, ServiceID: img.ServiceID}
+				if haveIdentityMatch {
 					entry.SourceURL = old.SourceURL
 				}
-				prefix := fmt.Sprintf("%04d", i+1)
 				complete, completeErr := tilePyramidComplete(ctx, store, dir+"/"+prefix, data, defaultTileSize)
 				if completeErr == nil && complete {
 					sum.Tiled++
@@ -252,11 +329,10 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			continue
 		}
 		sum.Stored++
-		entry := provenanceImg{File: file, ServiceID: img.ServiceID, SourceURL: used}
+		entry := provenanceImg{File: file, CanvasID: img.CanvasID, ServiceID: img.ServiceID, SourceURL: used}
 		// Best-effort level0 pyramid for deep zoom. An undecodable image
 		// (or render error) leaves only the flat jpg — the serve-time
 		// rewrite falls back gracefully.
-		prefix := fmt.Sprintf("%04d", i+1)
 		if _, terr := renderTilePyramid(ctx, store, dir+"/"+prefix, data, defaultTileSize); terr == nil {
 			sum.Tiled++
 			entry.TileDir = prefix
@@ -271,6 +347,28 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		return sum, fmt.Errorf("%w: %d of %d required image(s) failed", ErrIncomplete, len(sum.Failures), len(images))
 	}
 
+	prov.LinkedResources, prov.LinkedFailures, err = preserveLinkedResources(ctx, fetcher, store, dir, manifestBytes, previous.LinkedResources, &sum, cfg.linkedProgress)
+	if err != nil {
+		return sum, err
+	}
+
+	if hadCommittedBundle {
+		activeKey := dir + "/manifest.json"
+		if previous.ManifestFile != "" {
+			activeKey = dir + "/" + previous.ManifestFile
+		}
+		active, activeErr := store.Get(ctx, activeKey)
+		if activeErr != nil || !bytes.Equal(active, manifestBytes) {
+			digest := sha256.Sum256(manifestBytes)
+			prov.ManifestFile = fmt.Sprintf("manifest-versions/%x.json", digest[:])
+			if err := store.Put(ctx, dir+"/"+prov.ManifestFile, manifestBytes); err != nil {
+				return sum, fmt.Errorf("preserve: staging refreshed manifest: %w", err)
+			}
+		} else {
+			prov.ManifestFile = previous.ManifestFile
+		}
+	}
+
 	provJSON, err := json.MarshalIndent(prov, "", "  ")
 	if err != nil {
 		return sum, fmt.Errorf("preserve: encoding provenance: %w", err)
@@ -281,29 +379,33 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 	return sum, nil
 }
 
-func previousProvenance(ctx context.Context, store BlobStore, key string) (map[string]provenanceImg, error) {
-	out := make(map[string]provenanceImg)
+func previousProvenance(ctx context.Context, store BlobStore, key string) (provenance, bool, error) {
 	exists, err := store.Exists(ctx, key)
 	if err != nil || !exists {
-		return out, err
+		return provenance{}, false, err
 	}
 	b, err := store.Get(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("preserve: reading existing provenance: %w", err)
+		return provenance{}, false, fmt.Errorf("preserve: reading existing provenance: %w", err)
 	}
-	return decodePreviousProvenance(b), nil
+	var old provenance
+	if err := json.Unmarshal(b, &old); err != nil {
+		return provenance{}, false, nil
+	}
+	return old, true, nil
 }
 
-func decodePreviousProvenance(b []byte) map[string]provenanceImg {
-	out := make(map[string]provenanceImg)
-	var old provenance
-	if json.Unmarshal(b, &old) != nil {
-		return out // corrupt completion marker is replaced if recovery succeeds
+func refreshedArtifactNames(img ImageResource, occurrence int) (file, tileDir string) {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", img.ServiceID, img.CanvasID, occurrence)))
+	base := fmt.Sprintf("image-%x", sum[:12])
+	return base + ".jpg", base
+}
+
+func filepathExt(name string) string {
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[i:]
 	}
-	for _, img := range old.Images {
-		out[img.File] = img
-	}
-	return out
+	return ""
 }
 
 func tilePyramidComplete(ctx context.Context, store BlobStore, prefix string, jpegBytes []byte, tileSize int) (bool, error) {

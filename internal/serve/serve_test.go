@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -59,6 +60,64 @@ func TestServer_ServesPreservedBundle(t *testing.T) {
 	}
 	if code, _ := get("/example.org_iiif_m/missing.json"); code != http.StatusNotFound {
 		t.Fatalf("missing file = %d, want 404", code)
+	}
+}
+
+func TestServerServesAtomicallySelectedManifestVersion(t *testing.T) {
+	root := writeBundle(t)
+	bundle := filepath.Join(root, "example.org_iiif_m")
+	versionDir := filepath.Join(bundle, "manifest-versions")
+	if err := os.MkdirAll(versionDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "refresh.json"), []byte(`{"label":"refreshed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov := `{"manifest_file":"manifest-versions/refresh.json","images":[]}`
+	if err := os.WriteFile(filepath.Join(bundle, "provenance.json"), []byte(prov), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://local/example.org_iiif_m/manifest.json", nil)
+	rec := httptest.NewRecorder()
+	New(root).Handler().ServeHTTP(rec, req)
+	var got struct {
+		Label string `json:"label"`
+	}
+	decodeErr := json.Unmarshal(rec.Body.Bytes(), &got)
+	if rec.Code != http.StatusOK || decodeErr != nil || got.Label != "refreshed" {
+		t.Fatalf("selected manifest response = %d %q (%v)", rec.Code, rec.Body.String(), decodeErr)
+	}
+}
+
+func TestServerLocalizesPreservedAnnotationPageBodies(t *testing.T) {
+	root := writeBundle(t)
+	bundle := filepath.Join(root, "example.org_iiif_m")
+	resourceDir := filepath.Join(bundle, "resources")
+	if err := os.MkdirAll(resourceDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	page := `{"id":"https://remote.example/page","type":"AnnotationPage","items":[{"body":{"id":"https://remote.example/ocr.txt","type":"Text"}}]}`
+	if err := os.WriteFile(filepath.Join(resourceDir, "page.json"), []byte(page), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resourceDir, "ocr.txt"), []byte("text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov := `{"images":[],"linked_resources":[
+	  {"url":"https://remote.example/page","file":"resources/page.json","kind":"annotation"},
+	  {"url":"https://remote.example/ocr.txt","file":"resources/ocr.txt","kind":"content"}
+	]}`
+	if err := os.WriteFile(filepath.Join(bundle, "provenance.json"), []byte(prov), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://local/example.org_iiif_m/resources/page.json", nil)
+	rec := httptest.NewRecorder()
+	New(root).Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "remote.example") ||
+		!strings.Contains(rec.Body.String(), "http://local/example.org_iiif_m/resources/ocr.txt") {
+		t.Fatalf("localized annotation page = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
