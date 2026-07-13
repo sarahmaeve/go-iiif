@@ -232,6 +232,8 @@ Under `~/iiif-images/<host>/<slug>/`:
   OCR or text bodies, and `seeAlso` resources such as ALTO or TEI; JSON links
   are localized only while serving, while stored bytes remain original
 - `provenance.json` — source URLs, recorded license, tile records
+  (and, for the LOC fallback, `manifest_derivation` with the item API URL and
+  source-response SHA-256)
 - `.iiifpreserve/catalog.json` at the library root — catalogue overrides,
   notes, tags, and cached sizes
 

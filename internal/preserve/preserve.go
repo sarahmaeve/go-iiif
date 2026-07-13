@@ -45,12 +45,19 @@ var ErrRefreshRemovesImages = errors.New("preserve: refresh would hide preserved
 const defaultTileSize = 512
 
 type provenance struct {
-	ManifestURL     string                    `json:"manifest_url"`
-	ManifestFile    string                    `json:"manifest_file,omitempty"`
-	License         string                    `json:"license,omitempty"`
-	Images          []provenanceImg           `json:"images"`
-	LinkedResources []provenanceLinked        `json:"linked_resources,omitempty"`
-	LinkedFailures  []provenanceLinkedFailure `json:"linked_failures,omitempty"`
+	ManifestURL        string                    `json:"manifest_url"`
+	ManifestFile       string                    `json:"manifest_file,omitempty"`
+	ManifestDerivation *provenanceDerivation     `json:"manifest_derivation,omitempty"`
+	License            string                    `json:"license,omitempty"`
+	Images             []provenanceImg           `json:"images"`
+	LinkedResources    []provenanceLinked        `json:"linked_resources,omitempty"`
+	LinkedFailures     []provenanceLinkedFailure `json:"linked_failures,omitempty"`
+}
+
+type provenanceDerivation struct {
+	Method       string `json:"method"`
+	SourceURL    string `json:"source_url"`
+	SourceSHA256 string `json:"source_sha256"`
 }
 
 type provenanceImg struct {
@@ -218,6 +225,15 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 		ManifestURL: manifestURL,
 		License:     extractLicense(manifestBytes),
 	}
+	if provider, ok := fetcher.(source.ManifestDerivationProvider); ok {
+		if derivation, derived := provider.ManifestDerivation(manifestURL, manifestBytes); derived {
+			prov.ManifestDerivation = &provenanceDerivation{
+				Method:       derivation.Method,
+				SourceURL:    derivation.SourceURL,
+				SourceSHA256: derivation.SourceSHA256,
+			}
+		}
+	}
 	previousByService := make(map[string][]provenanceImg)
 	for _, old := range previous.Images {
 		if old.ServiceID != "" {
@@ -366,6 +382,9 @@ func Preserve(ctx context.Context, fetcher source.Fetcher, store BlobStore, mani
 			}
 		} else {
 			prov.ManifestFile = previous.ManifestFile
+			if prov.ManifestDerivation == nil {
+				prov.ManifestDerivation = previous.ManifestDerivation
+			}
 		}
 	}
 

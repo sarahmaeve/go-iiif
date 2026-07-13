@@ -21,6 +21,23 @@ type jpegEverything struct {
 	image                 []byte
 }
 
+type derivedJPEGFetcher struct {
+	jpegEverything
+	manifestURL string
+	manifest    []byte
+}
+
+func (f derivedJPEGFetcher) ManifestDerivation(manifestURL string, manifest []byte) (source.ManifestDerivation, bool) {
+	if manifestURL != f.manifestURL || !bytes.Equal(manifest, f.manifest) {
+		return source.ManifestDerivation{}, false
+	}
+	return source.ManifestDerivation{
+		Method:       "loc-item-api-fallback",
+		SourceURL:    "https://www.loc.gov/item/example/?fo=json",
+		SourceSHA256: strings.Repeat("a", 64),
+	}, true
+}
+
 func (j jpegEverything) Fetch(_ context.Context, url string) ([]byte, error) {
 	if url == j.manifestURL {
 		return []byte(j.manifest), nil
@@ -96,6 +113,44 @@ func TestPreserve_StoresImagesManifestAndProvenance(t *testing.T) {
 	}
 	if !strings.HasPrefix(p.Images[0].SourceURL, "https://iiif.bodleian.ox.ac.uk/iiif/image/") {
 		t.Fatalf("provenance source URL = %q, want the resolved image URL", p.Images[0].SourceURL)
+	}
+}
+
+func TestPreserveRecordsDerivedManifestProvenance(t *testing.T) {
+	const manifestURL = "https://www.loc.gov/item/example/manifest.json"
+	manifest := []byte(`{"id":"https://www.loc.gov/item/example/manifest.json","type":"Manifest","items":[]}`)
+	fetcher := derivedJPEGFetcher{
+		jpegEverything: jpegEverything{},
+		manifestURL:    manifestURL,
+		manifest:       manifest,
+	}
+	store := NewLocalBlobStore(t.TempDir())
+	if _, err := Preserve(t.Context(), fetcher, store, manifestURL, manifest); err != nil {
+		t.Fatal(err)
+	}
+	provBytes, err := store.Get(t.Context(), dirFor(manifestURL)+"/provenance.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prov provenance
+	if err := json.Unmarshal(provBytes, &prov); err != nil {
+		t.Fatal(err)
+	}
+	if prov.ManifestDerivation == nil || prov.ManifestDerivation.Method != "loc-item-api-fallback" ||
+		prov.ManifestDerivation.SourceURL != "https://www.loc.gov/item/example/?fo=json" ||
+		prov.ManifestDerivation.SourceSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("manifest derivation = %+v", prov.ManifestDerivation)
+	}
+	// An idempotent rerun may receive the already-derived bytes through a
+	// fetcher without the optional capability (for example -manifest-file).
+	// The unchanged active representation must retain its established origin.
+	if _, err := Preserve(t.Context(), jpegEverything{}, store, manifestURL, manifest); err != nil {
+		t.Fatal(err)
+	}
+	provBytes, err = store.Get(t.Context(), dirFor(manifestURL)+"/provenance.json")
+	prov = provenance{}
+	if err != nil || json.Unmarshal(provBytes, &prov) != nil || prov.ManifestDerivation == nil {
+		t.Fatalf("idempotent rerun lost derivation: %+v, %v", prov.ManifestDerivation, err)
 	}
 }
 

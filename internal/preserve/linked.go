@@ -299,8 +299,8 @@ func preserveLinkedResources(ctx context.Context, fetcher source.Fetcher, store 
 		}
 		preserved = append(preserved, entry)
 
-		if json.Valid(data) {
-			if nested, nestedErr := discoverLinkedResources(data, true); nestedErr == nil {
+		if resource.Kind == linkedAnnotation {
+			if nested, nestedErr := discoverAnnotationLinks(data); nestedErr == nil {
 				queue = append(queue, nested...)
 			}
 		}
@@ -316,6 +316,24 @@ func preserveLinkedResources(ctx context.Context, fetcher source.Fetcher, store 
 		}
 	}
 	return preserved, failures, nil
+}
+
+// discoverAnnotationLinks expands only recognized IIIF annotation graph
+// documents. Generic JSON datasets may contain common keys such as body,
+// resource, annotations, or seeAlso; treating those as IIIF would turn a
+// single preservation reference into an unrelated recursive crawl.
+func discoverAnnotationLinks(document []byte) ([]LinkedResource, error) {
+	var root map[string]any
+	if err := json.Unmarshal(document, &root); err != nil {
+		return nil, err
+	}
+	typ := strings.ToLower(stringValue(firstNonNil(root["type"], root["@type"])))
+	if !strings.Contains(typ, "annotationpage") &&
+		!strings.Contains(typ, "annotationcollection") &&
+		!strings.Contains(typ, "annotationlist") {
+		return nil, errors.New("linked annotation resource has an unrecognized IIIF annotation type")
+	}
+	return discoverLinkedResources(document, true)
 }
 
 func linkedDigest(data []byte) string {

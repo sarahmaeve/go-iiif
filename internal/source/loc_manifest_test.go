@@ -2,8 +2,10 @@ package source
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
@@ -42,7 +44,8 @@ func TestLOCManifestFetcherFallsBackToOfficialItemJSON(t *testing.T) {
 		}},
 	}
 
-	body, err := NewLOCManifestFetcher(inner).Fetch(context.Background(), manifestURL)
+	fetcher := NewLOCManifestFetcher(inner)
+	body, err := fetcher.Fetch(context.Background(), manifestURL)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -80,6 +83,15 @@ func TestLOCManifestFetcherFallsBackToOfficialItemJSON(t *testing.T) {
 	}
 	if len(image.Service) != 1 || image.Service[0].ID != "https://tile.loc.gov/image-services/iiif/service:amed:ms:0001" {
 		t.Fatalf("generated service = %+v", image.Service)
+	}
+	derivation, ok := fetcher.ManifestDerivation(manifestURL, body)
+	wantDigest := sha256.Sum256(item)
+	if !ok || derivation.Method != "loc-item-api-fallback" || derivation.SourceURL != itemURL ||
+		derivation.SourceSHA256 != fmt.Sprintf("%x", wantDigest[:]) {
+		t.Fatalf("derivation = %+v, %v", derivation, ok)
+	}
+	if _, stale := fetcher.ManifestDerivation(manifestURL, append(body, '\n')); stale {
+		t.Fatal("changed manifest bytes inherited stale derivation metadata")
 	}
 }
 

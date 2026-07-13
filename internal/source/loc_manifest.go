@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 )
 
 // LOCManifestFetcher preserves the ordinary Fetcher contract but works around
@@ -18,7 +20,9 @@ import (
 // (?fo=json) and derive a small Presentation 3 manifest from the ordered page
 // files and IIIF Image API links in that response.
 type LOCManifestFetcher struct {
-	inner Fetcher
+	inner       Fetcher
+	mu          sync.RWMutex
+	derivations map[[32]byte]ManifestDerivation
 }
 
 func NewLOCManifestFetcher(inner Fetcher) *LOCManifestFetcher {
@@ -44,7 +48,35 @@ func (f *LOCManifestFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, 
 	if itemErr != nil {
 		return nil, fmt.Errorf("source: LOC item API fallback: %w", itemErr)
 	}
+	itemDigest := sha256.Sum256(itemBody)
+	f.mu.Lock()
+	if f.derivations == nil {
+		f.derivations = make(map[[32]byte]ManifestDerivation)
+	}
+	f.derivations[manifestDerivationKey(rawURL, manifest)] = ManifestDerivation{
+		Method:       "loc-item-api-fallback",
+		SourceURL:    itemURL,
+		SourceSHA256: fmt.Sprintf("%x", itemDigest[:]),
+	}
+	f.mu.Unlock()
 	return manifest, nil
+}
+
+func (f *LOCManifestFetcher) ManifestDerivation(manifestURL string, manifest []byte) (ManifestDerivation, bool) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	d, ok := f.derivations[manifestDerivationKey(manifestURL, manifest)]
+	return d, ok
+}
+
+func manifestDerivationKey(manifestURL string, manifest []byte) [32]byte {
+	h := sha256.New()
+	_, _ = h.Write([]byte(manifestURL))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(manifest)
+	var key [32]byte
+	copy(key[:], h.Sum(nil))
+	return key
 }
 
 func locItemAPIURL(rawURL string) (string, bool) {

@@ -35,8 +35,9 @@ manifest returned a Cloudflare 403; the automatic second pull to the official
 `?fo=json` item endpoint returned the ordered page groups and the CLI reported
 123 images. A representative `tile.loc.gov` Image API page returned its
 full-resolution JPEG successfully. The fallback stores a derived Presentation
-3 manifest; `-manifest-file` stores a manually downloaded original byte for
-byte.
+3 manifest and records its item API URL and source-response SHA-256 under
+`manifest_derivation` in provenance; `-manifest-file` stores a manually
+downloaded original byte for byte.
 
 National Library of Scotland manifest `234298262` was also exercised with the
 CLI-native `-taster`: 106 images enumerated and the first 2296×3000 JPEG

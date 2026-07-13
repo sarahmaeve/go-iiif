@@ -136,6 +136,9 @@ manifest normally; on a 403 for only that exact route it politely pulls
 item's page-file groups and `info.json` links. This is intentionally two-step,
 so the pristine upstream manifest wins automatically if the challenge is
 removed. The derived manifest links its source item JSON with `seeAlso`. A
+`manifest_derivation` provenance record identifies the fallback method, item
+API URL, and SHA-256 of the item JSON response, so the synthesized bytes cannot
+be mistaken for a representation returned by the requested manifest URL. A
 researcher who manually downloads the original should instead use
 `-manifest-file` to retain exact manifest bytes.
 **Bot-wall stance:** present an honest identifying User-Agent (a one-time
@@ -196,7 +199,12 @@ from remaining visible. Doctor verifies their files/checksums and reports
 manifest links absent from older provenance. AnnotationList/AnnotationPage
 responses must be valid JSON before they are activated. Resource filenames are
 URL-deterministic, so a cancelled backfill reuses files staged before the
-atomic provenance commit rather than requesting them again.
+atomic provenance commit rather than requesting them again. Recursive link
+discovery is limited to fetched documents whose root type is a recognized
+AnnotationPage, AnnotationCollection, or Presentation 2 AnnotationList;
+generic JSON `seeAlso` datasets are preserved as bytes but never interpreted
+as annotation graphs merely because they contain fields such as `body` or
+`resource`.
 
 ### 4.5 Serving (built)
 A static HTTPS file server over the BlobStore tree (stdlib only;

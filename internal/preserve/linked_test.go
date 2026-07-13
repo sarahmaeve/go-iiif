@@ -136,6 +136,28 @@ func TestPreserveLinkedAnnotationsOCRAndSeeAlso(t *testing.T) {
 	}
 }
 
+func TestGenericSeeAlsoJSONDoesNotExpandAsAnnotationGraph(t *testing.T) {
+	const manifestURL = "https://example.org/manifest"
+	const datasetURL = "https://example.org/metadata.json"
+	const unrelatedURL = "https://example.org/unrelated.txt"
+	manifest := []byte(`{
+	  "id":"https://example.org/manifest","type":"Manifest","items":[],
+	  "seeAlso":[{"id":"https://example.org/metadata.json","type":"Dataset","format":"application/json"}]
+	}`)
+	// `body` is an ordinary application field here, not an IIIF Annotation
+	// body. It must not become another preservation request.
+	dataset := []byte(`{"type":"Dataset","body":{"id":"https://example.org/unrelated.txt","format":"text/plain"}}`)
+	fetcher := &linkedFetcher{bodies: map[string][]byte{datasetURL: dataset}}
+	store := NewLocalBlobStore(t.TempDir())
+	sum, err := Preserve(t.Context(), fetcher, store, manifestURL, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.LinkedStored != 1 || len(fetcher.calls) != 1 || fetcher.calls[0] != datasetURL {
+		t.Fatalf("calls=%v summary=%+v; generic JSON expanded to %s", fetcher.calls, sum, unrelatedURL)
+	}
+}
+
 func TestLinkedFailureDoesNotSuppressImageBundle(t *testing.T) {
 	const manifestURL = "https://example.org/manifest"
 	manifest := []byte(`{"id":"https://example.org/manifest","type":"Manifest","items":[],"annotations":[{"id":"https://example.org/missing","type":"AnnotationPage"}]}`)
