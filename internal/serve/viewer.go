@@ -352,6 +352,11 @@ aside.library a[aria-current]{color:var(--accent);background:var(--surface);
       sideBarOpenByDefault: true,
       defaultSideBarPanel: 'annotations',
       highlightAllAnnotations: true,
+      /* mirador-textoverlay renders preserved ALTO/hOCR (canvas seeAlso,
+         localized at serve time) as a text layer. Its toolbar only
+         appears when a window actually has OCR, so enabling globally is
+         safe; text starts hidden until the researcher toggles it. */
+      textOverlay: { enabled: true, selectable: true, visible: false },
     },
     windows: [{ manifestId: document.getElementById('mirador').dataset.manifest }]
   });

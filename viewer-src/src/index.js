@@ -14,6 +14,22 @@
 import * as MiradorAll from 'mirador';
 import maePlugins from 'mirador-annotation-editor';
 import maeCss from 'mirador-annotation-editor/dist/index.css?inline';
+// OCR text layer over preserved ALTO/hOCR (canvas seeAlso, localized at
+// serve time). Pinned to 1.0.4: the first Mirador 4 / MUI 7 / React 19
+// release line (1.0.0, 2026-05) — matches this build's stack exactly, and
+// its dist is a single JS module (no sidecar CSS), preserving the
+// single-embedded-asset model. Verified by reading the published dist.
+// Packaging quirk to know when bumping: the dist imports
+// @mui/icons-material without declaring it (upstream bug — Mirador
+// inlines its icons; this dist externalizes them). Our package.json
+// declares @mui/icons-material directly to cover that hole, so the
+// import resolves regardless of the Mirador checkout's own dependency
+// set; drop the declaration only once upstream fixes theirs.
+// The dist is also patched post-install (patches/apply.mjs, run by
+// `make viewer`): unguarded v2-shape reads in two sagas crash on MAE's
+// W3C annotation pages and kill the plugin's saga tree, leaving the
+// overlay spinner stuck. Re-evaluate both quirks when bumping the pin.
+import textOverlayPlugins from 'mirador-textoverlay';
 import HttpAnnotationAdapter, { ReadOnlyAnnotationAdapter } from './adapter.js';
 
 // Single-asset model: inject MAE's stylesheet at load instead of emitting
@@ -60,7 +76,7 @@ export function viewer(config, plugins = []) {
       ...annotationConfig,
     },
   };
-  return MiradorAll.viewer(merged, [...maePlugins, ...plugins]);
+  return MiradorAll.viewer(merged, [...maePlugins, ...textOverlayPlugins, ...plugins]);
 }
 
 // Re-export the rest of Mirador's public surface unchanged; the explicit

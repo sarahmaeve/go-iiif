@@ -93,7 +93,9 @@ h1{margin:5px 0 0;font:700 1.35rem/1.15 "Newsreader",Georgia,serif;color:var(--p
       allowFullscreen: true,
       sideBarOpenByDefault: true,
       defaultSideBarPanel: 'annotations',
-      highlightAllAnnotations: true
+      highlightAllAnnotations: true,
+      /* Same OCR text-overlay settings as the single-manuscript viewer. */
+      textOverlay: { enabled: true, selectable: true, visible: false }
     },
     workspace: { type: 'mosaic' },
     windows: items.map((item) => ({ manifestId: item.manifest, ...(item.canvas ? { canvasId: item.canvas } : {}) }))

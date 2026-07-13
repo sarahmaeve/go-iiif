@@ -327,6 +327,51 @@ func TestServer_ViewerHasNoLegacyAuthoringForm(t *testing.T) {
 	}
 }
 
+// Preserved ALTO/hOCR (linked via canvas seeAlso, localized at serve time)
+// is displayed by the vendored mirador-textoverlay plugin, which only
+// activates for windows whose config enables it. Both viewer pages — the
+// single-manuscript viewer and the comparison workspace — must carry the
+// textOverlay window config or preserved OCR stays invisible.
+func TestServer_ViewerPagesEnableTextOverlay(t *testing.T) {
+	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
+	defer ts.Close()
+
+	for _, page := range []string{
+		"/cookbook-v3/",
+		"/__compare__/?doc=cookbook-v3&doc=bodleian-c481",
+	} {
+		_, body, _ := viewerGet(t, ts, page)
+		if !strings.Contains(body, "textOverlay") || !strings.Contains(body, "enabled: true") {
+			t.Fatalf("%s does not enable the OCR text overlay; body=%s", page, body)
+		}
+	}
+}
+
+// The vendored mirador-textoverlay 1.0.4 dist crashes on W3C (v3)
+// annotation pages: two of its sagas read annotationJson.resources
+// unguarded, but MAE's adapter feeds this viewer W3C AnnotationPages
+// whose annotations live under items. The uncaught TypeError makes
+// redux-saga cancel the plugin's entire watcher tree, which also
+// cancels in-flight OCR text fetches — the overlay spinner then never
+// resolves. The vendoring build patches both reads
+// (viewer-src/patches/apply.mjs, run by `make viewer`); this test pins
+// the patch so a rebuilt bundle cannot silently regress.
+func TestViewerBundleGuardsTextOverlayAgainstV3AnnotationPages(t *testing.T) {
+	bundle, err := os.ReadFile(filepath.Join("viewer", "mirador.min.js"))
+	if err != nil {
+		t.Fatalf("read embedded viewer bundle: %v", err)
+	}
+	body := string(bundle)
+	if strings.Contains(body, ".resources.some(") {
+		t.Errorf("bundle contains the unguarded textoverlay read `.resources.some(`; rebuild with `make viewer` so viewer-src/patches/apply.mjs is applied")
+	}
+	for _, patched := range []string{".resources||[]).some(", ".resources||[]).filter("} {
+		if !strings.Contains(body, patched) {
+			t.Errorf("bundle is missing the patched textoverlay read %q; rebuild with `make viewer` so viewer-src/patches/apply.mjs is applied", patched)
+		}
+	}
+}
+
 func TestServer_ViewerPageEmbedsMiradorPointedAtLocalManifest(t *testing.T) {
 	ts := httptest.NewServer(New(filepath.Join("testdata", "bundle")).Handler())
 	defer ts.Close()

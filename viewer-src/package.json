@@ -10,10 +10,12 @@
   "dependencies": {
     "mirador": "file:../../mirador",
     "mirador-annotation-editor": "1.2.4",
+    "mirador-textoverlay": "1.0.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "@mui/material": "^7.0.0",
     "@mui/system": "^7.0.0",
+    "@mui/icons-material": "^7.0.0",
     "@emotion/react": "^11.10.6",
     "@emotion/styled": "^11.10.6",
     "react-i18next": "^15.0.0"
