@@ -347,7 +347,7 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 
 	// One polite fetcher shared across discovery, manifest, and image
 	// fetches so a single per-host rate limiter governs all traffic.
-	fetcher, err := newCLIFetcher(o.store)
+	fetcher, err := newCLIFetcher(o.store, errOut)
 	if err != nil {
 		errOut.line("iiifpreserve:", err)
 		return 1
@@ -437,13 +437,23 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 	return 0
 }
 
-func newCLIFetcher(storeRoot string) (source.Fetcher, error) {
+func newCLIFetcher(storeRoot string, errOut *cliWriter) (source.Fetcher, error) {
 	cache, err := source.NewFileConditionalStore(filepath.Join(storeRoot, ".iiifpreserve", "http-cache"))
 	if err != nil {
 		return nil, err
 	}
-	polite := source.NewPoliteFetcher(source.NewHTTPFetcher(source.WithConditionalStore(cache)))
+	httpFetcher := source.NewHTTPFetcher(
+		source.WithConditionalStore(cache),
+		source.WithBnFOAIHTTP(func(rawURL string) {
+			warnBnFOAIHTTP(errOut, rawURL)
+		}),
+	)
+	polite := source.NewPoliteFetcher(httpFetcher)
 	return source.NewLOCManifestFetcher(polite), nil
+}
+
+func warnBnFOAIHTTP(errOut *cliWriter, rawURL string) {
+	errOut.line("iiifpreserve: WARNING using HTTP, not HTTPS, for BnF OAI metadata:", rawURL)
 }
 
 func runMetadataExport(o *options, out, errOut *cliWriter) int {
@@ -494,6 +504,12 @@ func runDoctor(o *options, out, errOut *cliWriter) int {
 	}
 	out.printf("iiifpreserve: doctor checked %d bundle(s), %d image(s), %d linked resource(s), %d tile pyramid(s), %d file(s)\n",
 		report.Bundles, report.Images, report.LinkedResources, report.TilePyramids, report.FilesChecked)
+	if len(report.ManifestReruns) > 0 {
+		out.line("iiifpreserve: recommended commands to retry unpreserved linked resources:")
+		for _, manifestURL := range report.ManifestReruns {
+			out.printf("  iiifpreserve -manifest %s -store %s\n", shellQuoteArg(manifestURL), shellQuoteArg(o.store))
+		}
+	}
 	if !report.Healthy() || out.err != nil || errOut.err != nil {
 		return 1
 	}
@@ -502,6 +518,13 @@ func runDoctor(o *options, out, errOut *cliWriter) int {
 		return 1
 	}
 	return 0
+}
+
+// shellQuoteArg returns one POSIX-shell-safe argument. Doctor recommendations
+// use resolved store paths, so quoting them is preferable to relying on tilde
+// expansion or on the absence of whitespace and metacharacters.
+func shellQuoteArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 // crawl consumes the pipeline's classified results and, per Match, either
@@ -630,7 +653,7 @@ func serveBanner(scheme, addr, dir string) string {
 // HTTPS fetcher as the crawler (no curl). -dry-run fetches and reports
 // without storing.
 func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
-	fetcher, err := newCLIFetcher(o.store)
+	fetcher, err := newCLIFetcher(o.store, errOut)
 	if err != nil {
 		errOut.line("iiifpreserve:", err)
 		return 1

@@ -16,7 +16,8 @@ import (
 )
 
 // ErrInsecureURL is returned when a URL is not https. The crawler refuses
-// plaintext rather than silently upgrading, so misconfiguration is explicit.
+// plaintext rather than silently upgrading, except for the explicit, noisy
+// BnF OAI exception configured with WithBnFOAIHTTP.
 var ErrInsecureURL = errors.New("source: non-https URL refused")
 
 // ErrNonResource is returned when a 2xx response is an HTML page rather than
@@ -63,10 +64,11 @@ func (e *HTTPStatusError) Error() string {
 
 // HTTPFetcher retrieves IIIF resources over HTTPS. It implements Fetcher.
 type HTTPFetcher struct {
-	client    *http.Client
-	userAgent string
-	hostUA    map[string]string
-	store     ConditionalStore
+	client         *http.Client
+	userAgent      string
+	hostUA         map[string]string
+	store          ConditionalStore
+	warnBnFOAIHTTP func(string)
 }
 
 // Option configures an HTTPFetcher.
@@ -96,6 +98,14 @@ func WithHostUserAgent(host, ua string) Option {
 // return 304 and reuse the cached body.
 func WithConditionalStore(s ConditionalStore) Option {
 	return func(f *HTTPFetcher) { f.store = s }
+}
+
+// WithBnFOAIHTTP permits plaintext HTTP only for BnF's exact OAI handler.
+// BnF publishes these links over HTTP and does not currently serve the same
+// endpoint over HTTPS. A non-nil warning callback is required so enabling the
+// exception can never be silent; it is called before every attempted request.
+func WithBnFOAIHTTP(warn func(rawURL string)) Option {
+	return func(f *HTTPFetcher) { f.warnBnFOAIHTTP = warn }
 }
 
 // NewHTTPFetcher returns an HTTPFetcher whose default and per-host
@@ -156,8 +166,8 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 	if err != nil {
 		return nil, fmt.Errorf("source: parsing %q: %w", rawURL, err)
 	}
-	if u.Scheme != "https" {
-		return nil, fmt.Errorf("%w: %q", ErrInsecureURL, rawURL)
+	if err := f.checkURL(u); err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -185,7 +195,23 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 		}
 	}
 
-	resp, err := f.client.Do(req)
+	// Apply the same scheme policy to redirects before Go sends the redirected
+	// request. Otherwise an allowed URL could silently escape to arbitrary HTTP.
+	client := *f.client
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := f.checkURL(req.URL); err != nil {
+			return err
+		}
+		if checkRedirect != nil {
+			return checkRedirect(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("source: fetching %s: %w", rawURL, err)
 	}
@@ -231,4 +257,26 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 		}
 	}
 	return body, nil
+}
+
+func (f *HTTPFetcher) checkURL(u *url.URL) error {
+	if u.Scheme == "https" {
+		return nil
+	}
+	if isBnFOAIHandler(u) && f.warnBnFOAIHTTP != nil {
+		f.warnBnFOAIHTTP(u.String())
+		return nil
+	}
+	return fmt.Errorf("%w: %q", ErrInsecureURL, u.String())
+}
+
+// isBnFOAIHandler is deliberately narrower than a host allow-list: no custom
+// port, credentials, sibling path, or lookalike hostname receives the HTTP
+// exception.
+func isBnFOAIHandler(u *url.URL) bool {
+	return u.Scheme == "http" &&
+		strings.EqualFold(u.Hostname(), "oai.bnf.fr") &&
+		u.Port() == "" &&
+		u.User == nil &&
+		u.Path == "/oai2/OAIHandler"
 }

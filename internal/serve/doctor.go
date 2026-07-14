@@ -30,6 +30,9 @@ type DoctorReport struct {
 	LinkedResources int
 	FilesChecked    int
 	Problems        []DoctorProblem
+	// ManifestReruns contains unique source manifest URLs whose linked
+	// resources are missing or have recorded preservation failures.
+	ManifestReruns []string
 }
 
 func (r DoctorReport) Healthy() bool {
@@ -47,6 +50,18 @@ func (r *DoctorReport) problem(severity, path, format string, args ...any) {
 		Path:     filepath.ToSlash(path),
 		Message:  fmt.Sprintf(format, args...),
 	})
+}
+
+func (r *DoctorReport) recommendManifestRerun(rawURL string) {
+	if rawURL == "" {
+		return
+	}
+	for _, existing := range r.ManifestReruns {
+		if existing == rawURL {
+			return
+		}
+	}
+	r.ManifestReruns = append(r.ManifestReruns, rawURL)
 }
 
 // DiagnoseLibrary validates preserved source records and every file that a
@@ -82,6 +97,7 @@ func DiagnoseLibrary(root string) DoctorReport {
 		}
 		return report.Problems[i].Path < report.Problems[j].Path
 	})
+	sort.Strings(report.ManifestReruns)
 	return report
 }
 
@@ -131,6 +147,7 @@ func diagnoseBundle(report *DoctorReport, ref bundleRef) {
 	for _, resource := range prov.LinkedResources {
 		preservedLinked[resource.URL] = true
 	}
+	linkedRerunRecommended := len(prov.LinkedFailures) > 0
 	if expected, discoverErr := preserve.DiscoverLinkedResources(presentationManifest); discoverErr == nil {
 		type missingGroup struct {
 			count int
@@ -155,6 +172,7 @@ func diagnoseBundle(report *DoctorReport, ref bundleRef) {
 		for _, kind := range kinds {
 			group := missing[kind]
 			report.problem("WARN", ref.slug+"/manifest.json", "%d linked %s resource(s) are not preserved (first: %s)", group.count, kind, group.first)
+			linkedRerunRecommended = true
 		}
 	}
 
@@ -204,6 +222,9 @@ func diagnoseBundle(report *DoctorReport, ref bundleRef) {
 			path = failure.URL
 		}
 		report.problem("WARN", path, "unpreserved linked %s resource: %s", failure.Kind, failure.Error)
+	}
+	if linkedRerunRecommended {
+		report.recommendManifestRerun(prov.ManifestURL)
 	}
 
 	if _, err := annotation.Load(ref.absDir); err != nil {

@@ -3,11 +3,18 @@ package source
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 func TestNewHTTPFetcher_DefaultClientHasTimeout(t *testing.T) {
 	f := NewHTTPFetcher()
@@ -78,6 +85,89 @@ func TestHTTPFetcher_RejectsNonHTTPS(t *testing.T) {
 	}
 	if reached {
 		t.Fatal("a non-HTTPS request was actually sent; it must be rejected before dialing")
+	}
+}
+
+func TestHTTPFetcher_BnFOAIHTTPExceptionIsExactAndNoisy(t *testing.T) {
+	const allowed = "http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord&metadataPrefix=oai_dc&identifier=oai:bnf.fr:test"
+	reached := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		reached++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/xml;charset=UTF-8"}},
+			Body:       io.NopCloser(strings.NewReader("<OAI-PMH/>")),
+			Request:    req,
+		}, nil
+	})}
+
+	// Merely naming the endpoint is insufficient: without the warning-bearing
+	// option, the normal HTTPS-only policy still applies.
+	f := NewHTTPFetcher(WithHTTPClient(client))
+	if _, err := f.Fetch(context.Background(), allowed); !errors.Is(err, ErrInsecureURL) {
+		t.Fatalf("unconfigured BnF OAI fetch error = %v, want ErrInsecureURL", err)
+	}
+	if reached != 0 {
+		t.Fatal("unconfigured BnF OAI HTTP request reached the transport")
+	}
+
+	var warnings []string
+	f = NewHTTPFetcher(
+		WithHTTPClient(client),
+		WithBnFOAIHTTP(func(rawURL string) { warnings = append(warnings, rawURL) }),
+	)
+	body, err := f.Fetch(context.Background(), allowed)
+	if err != nil {
+		t.Fatalf("configured BnF OAI Fetch: %v", err)
+	}
+	if string(body) != "<OAI-PMH/>" || reached != 1 {
+		t.Fatalf("body = %q, transport calls = %d; want OAI XML and one call", body, reached)
+	}
+	if len(warnings) != 1 || warnings[0] != allowed {
+		t.Fatalf("warnings = %v, want exact insecure URL once", warnings)
+	}
+
+	for _, rawURL := range []string{
+		"http://oai.bnf.fr.evil.example/oai2/OAIHandler",
+		"http://oai.bnf.fr:80/oai2/OAIHandler",
+		"http://user@oai.bnf.fr/oai2/OAIHandler",
+		"http://oai.bnf.fr/oai2/OtherHandler",
+	} {
+		if _, err := f.Fetch(context.Background(), rawURL); !errors.Is(err, ErrInsecureURL) {
+			t.Errorf("Fetch(%q) error = %v, want ErrInsecureURL", rawURL, err)
+		}
+	}
+	if reached != 1 {
+		t.Fatalf("near-match URLs reached transport; calls = %d, want 1", reached)
+	}
+}
+
+func TestHTTPFetcher_BnFOAIHTTPExceptionCannotEscapeThroughRedirect(t *testing.T) {
+	const allowed = "http://oai.bnf.fr/oai2/OAIHandler?verb=Identify"
+	reached := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		reached++
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://oai.bnf.fr/oai2/OtherHandler"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})}
+	warnings := 0
+	f := NewHTTPFetcher(
+		WithHTTPClient(client),
+		WithBnFOAIHTTP(func(string) { warnings++ }),
+	)
+
+	if _, err := f.Fetch(context.Background(), allowed); !errors.Is(err, ErrInsecureURL) {
+		t.Fatalf("redirect error = %v, want ErrInsecureURL", err)
+	}
+	if reached != 1 {
+		t.Fatalf("transport calls = %d, want only the allowed initial request", reached)
+	}
+	if warnings != 1 {
+		t.Fatalf("warnings = %d, want one for the attempted OAI HTTP request", warnings)
 	}
 }
 

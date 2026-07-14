@@ -139,6 +139,26 @@ func TestDiagnoseLibraryWarnsAboutManifestLinkNotYetPreserved(t *testing.T) {
 	if !found {
 		t.Fatalf("missing linked-resource warning absent: %+v", report.Problems)
 	}
+	if len(report.ManifestReruns) != 1 || report.ManifestReruns[0] != "https://example.org/manifest" {
+		t.Fatalf("manifest reruns = %v, want the affected source manifest once", report.ManifestReruns)
+	}
+}
+
+func TestDiagnoseLibraryDeduplicatesManifestRerunRecommendation(t *testing.T) {
+	root, bundle := writeDoctorBundle(t, false)
+	manifest := `{"type":"Manifest","annotations":[{"id":"https://example.org/ocr/page1","type":"AnnotationPage"}],"seeAlso":[{"id":"https://example.org/metadata.xml"}]}`
+	if err := os.WriteFile(filepath.Join(bundle, "manifest.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prov := `{"manifest_url":"https://example.org/manifest","images":[{"file":"0001.jpg"}],"linked_failures":[{"url":"https://example.org/ocr/page1","kind":"annotation","error":"temporary failure"}]}`
+	if err := os.WriteFile(filepath.Join(bundle, "provenance.json"), []byte(prov), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report := DiagnoseLibrary(root)
+	if len(report.ManifestReruns) != 1 || report.ManifestReruns[0] != "https://example.org/manifest" {
+		t.Fatalf("manifest reruns = %v, want one command despite multiple linked warnings", report.ManifestReruns)
+	}
 }
 
 func TestDiagnoseLibraryFindsMissingAndCorruptFiles(t *testing.T) {

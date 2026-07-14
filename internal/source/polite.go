@@ -41,6 +41,8 @@ type PoliteFetcher struct {
 // backoff (DESIGN §4.3).
 var retryableStatuses = map[int]bool{429: true, 503: true}
 
+const defaultMaxAttempts = 3
+
 // PoliteOption configures a PoliteFetcher.
 type PoliteOption func(*PoliteFetcher)
 
@@ -94,7 +96,7 @@ func NewPoliteFetcher(inner Fetcher, opts ...PoliteOption) *PoliteFetcher {
 	p := &PoliteFetcher{
 		inner:       inner,
 		limiters:    make(map[string]RateLimiter),
-		maxAttempts: 1,
+		maxAttempts: defaultMaxAttempts,
 		baseDelay:   time.Second,
 		sleep:       sleepCtx,
 		newLimiter: func(host string) RateLimiter {

@@ -61,6 +61,33 @@ func TestPoliteFetcher_RetriesTransientStatuses(t *testing.T) {
 	}
 }
 
+func TestPoliteFetcher_DefaultRetriesTransientStatuses(t *testing.T) {
+	var slept []time.Duration
+	inner := &scriptedFetcher{results: []scriptResult{
+		{err: &HTTPStatusError{Code: 503}},
+		{err: &HTTPStatusError{Code: 429}},
+		{body: []byte("ok")},
+	}}
+	pf := NewPoliteFetcher(inner,
+		WithRateLimiterFunc(func(string) RateLimiter { return noWaitLimiter{} }),
+		WithSleeper(func(_ context.Context, d time.Duration) error {
+			slept = append(slept, d)
+			return nil
+		}),
+	)
+
+	body, err := pf.Fetch(context.Background(), "https://h.example.org/x")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if string(body) != "ok" || inner.calls != defaultMaxAttempts {
+		t.Fatalf("body = %q, calls = %d; want success on default attempt %d", body, inner.calls, defaultMaxAttempts)
+	}
+	if len(slept) != 2 || slept[0] != time.Second || slept[1] != 2*time.Second {
+		t.Fatalf("default backoff = %v, want [1s 2s]", slept)
+	}
+}
+
 func TestPoliteFetcher_HonorsRetryAfterOverExponential(t *testing.T) {
 	var slept []time.Duration
 	inner := &scriptedFetcher{results: []scriptResult{

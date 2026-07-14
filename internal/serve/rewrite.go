@@ -13,6 +13,7 @@ import (
 // provenanceDoc mirrors the subset of internal/preserve's provenance.json the
 // rewrite needs: which local file each original image came from.
 type provenanceDoc struct {
+	ManifestURL  string `json:"manifest_url,omitempty"`
 	ManifestFile string `json:"manifest_file,omitempty"`
 	Images       []struct {
 		File      string `json:"file"`

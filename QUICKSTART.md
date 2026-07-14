@@ -188,7 +188,9 @@ Warnings do not fail the check. Missing, empty, corrupt, or unsafe referenced
 files are reported as errors and produce a non-zero exit status; doctor never
 modifies the library. A warning that a manifest-declared linked resource is
 not preserved identifies an older bundle that can be rerun to backfill it;
-unchanged page images are reused without image requests.
+unchanged page images are reused without image requests. Doctor collates those
+bundles into deduplicated, shell-safe `iiifpreserve -manifest ... -store ...`
+commands at the end of its report.
 
 ## Exchange research metadata
 
@@ -278,7 +280,10 @@ preserved image is rejected.
 
 - **Gallica/BnF** — works, but BnF is rate-limited (13 s/host by design),
   so a manuscript takes a while. It's resumable and shows per-page
-  progress; pick a short one first, e.g.:
+  progress. Gallica manifests link their OAI metadata using BnF's HTTP-only
+  endpoint; that exact handler is the sole acquisition-side HTTP exception,
+  and every use prints an explicit `HTTP, not HTTPS` warning. Pick a short one
+  first, e.g.:
   ```sh
   iiifpreserve -manifest https://gallica.bnf.fr/iiif/ark:/12148/btv1b53199927r/manifest.json
   ```

@@ -102,6 +102,18 @@ func TestServeBanner(t *testing.T) {
 	}
 }
 
+func TestBnFOAIHTTPWarningIsExplicit(t *testing.T) {
+	const rawURL = "http://oai.bnf.fr/oai2/OAIHandler?verb=Identify"
+	var stderr bytes.Buffer
+	warnBnFOAIHTTP(&cliWriter{w: &stderr}, rawURL)
+	got := stderr.String()
+	for _, want := range []string{"WARNING", "HTTP, not HTTPS", "BnF OAI", rawURL} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning missing %q; got %q", want, got)
+		}
+	}
+}
+
 func TestParseArgs(t *testing.T) {
 	t.Run("collection is required", func(t *testing.T) {
 		if _, err := parseArgs([]string{"-lang", "fr"}); err == nil {
@@ -439,6 +451,45 @@ func TestRunDoctor(t *testing.T) {
 	}
 	if !contains(stderr.String(), "ERROR") || !contains(stderr.String(), "0001.jpg") {
 		t.Fatalf("doctor error output = %q", stderr.String())
+	}
+}
+
+func TestRunDoctorCollatesManifestRerunCommands(t *testing.T) {
+	root := t.TempDir()
+	bundle := filepath.Join(root, "gallica.bnf.fr", "manuscript")
+	if err := os.MkdirAll(bundle, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	manifestURL := "https://gallica.bnf.fr/iiif/ark:/12148/test/manifest.json"
+	files := map[string]string{
+		"manifest.json": `{"type":"Manifest","seeAlso":[{"id":"http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord&identifier=one"},{"id":"http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord&identifier=two"}]}`,
+		"provenance.json": `{"manifest_url":"` + manifestURL + `","images":[],"linked_failures":[` +
+			`{"url":"http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord&identifier=one","kind":"seeAlso","error":"old failure"},` +
+			`{"url":"http://oai.bnf.fr/oai2/OAIHandler?verb=GetRecord&identifier=two","kind":"seeAlso","error":"old failure"}]}`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(bundle, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-doctor", "-store", root}, &stdout, &stderr); code != 0 {
+		t.Fatalf("doctor exit = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "recommended commands") {
+		t.Fatalf("doctor omitted recommendation heading: %q", got)
+	}
+	wantCommand := "iiifpreserve -manifest " + shellQuoteArg(manifestURL) + " -store " + shellQuoteArg(root)
+	if strings.Count(got, wantCommand) != 1 {
+		t.Fatalf("doctor command count = %d, want one collated command; output=%q", strings.Count(got, wantCommand), got)
+	}
+}
+
+func TestShellQuoteArg(t *testing.T) {
+	if got, want := shellQuoteArg("/tmp/Sarah's library"), "'/tmp/Sarah'\"'\"'s library'"; got != want {
+		t.Fatalf("shellQuoteArg = %q, want %q", got, want)
 	}
 }
 
