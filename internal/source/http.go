@@ -160,7 +160,10 @@ func parseRetryAfter(v string) time.Duration {
 	return 0
 }
 
-// Fetch retrieves url, sending the configured User-Agent.
+const iiifAccept = "application/ld+json, application/json;q=0.9, image/jpeg;q=0.8, image/*;q=0.7, */*;q=0.1"
+
+// Fetch retrieves url, sending the configured User-Agent and IIIF-oriented
+// content negotiation.
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -175,10 +178,10 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) 
 		return nil, fmt.Errorf("source: building request for %s: %w", rawURL, err)
 	}
 	req.Header.Set("User-Agent", f.uaFor(u.Host))
-	// Honest content negotiation: we want IIIF JSON or images, never
-	// HTML. This is correct for the API and also less browser-like, so
-	// bot-walls are less likely to treat us as a browser to challenge.
-	req.Header.Set("Accept", "application/ld+json, application/json;q=0.9, image/jpeg;q=0.8, image/*;q=0.7, */*;q=0.1")
+	// Honest content negotiation: we want machine-readable resources, never
+	// HTML. This is also less browser-like, so bot-walls are less likely to
+	// issue a JavaScript challenge we cannot solve.
+	req.Header.Set("Accept", iiifAccept)
 
 	var cached CacheEntry
 	haveCached := false

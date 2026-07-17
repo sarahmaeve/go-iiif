@@ -125,6 +125,10 @@ func (p *PoliteFetcher) limiterFor(host string) RateLimiter {
 // delegates to the inner Fetcher, retrying transient 429/503 responses with
 // exponential backoff (honoring Retry-After when the server provides it).
 func (p *PoliteFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
+	return p.fetch(ctx, rawURL, p.inner.Fetch)
+}
+
+func (p *PoliteFetcher) fetch(ctx context.Context, rawURL string, fetch func(context.Context, string) ([]byte, error)) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("source: parsing %q: %w", rawURL, err)
@@ -147,7 +151,7 @@ func (p *PoliteFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error
 			return nil, fmt.Errorf("source: rate limiter wait for %s: %w", u.Host, err)
 		}
 
-		body, err := p.inner.Fetch(ctx, rawURL)
+		body, err := fetch(ctx, rawURL)
 		if err == nil {
 			return body, nil
 		}

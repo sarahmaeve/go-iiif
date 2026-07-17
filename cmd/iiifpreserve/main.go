@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,6 +27,7 @@ import (
 	"github.com/sarahmaeve/go-iiif/internal/metadata"
 	"github.com/sarahmaeve/go-iiif/internal/pipeline"
 	"github.com/sarahmaeve/go-iiif/internal/preserve"
+	"github.com/sarahmaeve/go-iiif/internal/rdfingest"
 	"github.com/sarahmaeve/go-iiif/internal/serve"
 	"github.com/sarahmaeve/go-iiif/internal/source"
 )
@@ -34,6 +36,9 @@ type options struct {
 	collection     string
 	manifest       string // -manifest: preserve one manifest URL, no crawl/filter
 	manifestFile   string // -manifest-file: preserve an already-downloaded pristine manifest
+	rdfFile        string // -rdf-file: preserve an already-downloaded RDF document
+	imageFile      string // -image-file: local primary image paired with RDF acquisition
+	imageBase      string // -image-base: resolve relative image strings in RDF
 	langs          []string
 	from, to       int
 	hasDate        bool
@@ -150,6 +155,9 @@ func parseArgs(args []string) (*options, error) {
 		collection     = fs.String("collection", "", "IIIF Collection root URL to crawl")
 		manifest       = fs.String("manifest", "", "preserve a single manifest URL (no crawl; skips the filter)")
 		manifestFile   = fs.String("manifest-file", "", "preserve a local manifest JSON file (no manifest download; skips the filter)")
+		rdfFile        = fs.String("rdf-file", "", "preserve a local RDF document by deriving a IIIF Presentation manifest")
+		imageFile      = fs.String("image-file", "", "use a local JPEG as the primary image for RDF acquisition")
+		imageBase      = fs.String("image-base", "", "base URL for relative image strings in RDF")
 		lang           = fs.String("lang", "", "comma-separated ISO 639-1 language codes")
 		from           = fs.Int("from", 0, "earliest year (inclusive)")
 		to             = fs.Int("to", 0, "latest year (inclusive)")
@@ -186,13 +194,16 @@ func parseArgs(args []string) (*options, error) {
 		return nil, fmt.Errorf("unexpected argument %q; pass options as flags (use -serve=PORT, not -serve PORT)", fs.Arg(0))
 	}
 	acquireModes := 0
-	for _, selected := range []bool{*collection != "", *manifest != "", *manifestFile != ""} {
+	for _, selected := range []bool{*collection != "", *manifest != "", *manifestFile != "", *rdfFile != ""} {
 		if selected {
 			acquireModes++
 		}
 	}
 	if acquireModes > 1 {
-		return nil, errors.New("-collection, -manifest, and -manifest-file are mutually exclusive")
+		return nil, errors.New("-collection, -manifest, -manifest-file, and -rdf-file are mutually exclusive")
+	}
+	if (*imageFile != "" || *imageBase != "") && *rdfFile == "" {
+		return nil, errors.New("-image-file and -image-base are supported only with -rdf-file")
 	}
 	if *pageRetries < 0 {
 		return nil, errors.New("-page-retries must be zero or greater")
@@ -222,19 +233,22 @@ func parseArgs(args []string) (*options, error) {
 	if *fresh && *journal != "" {
 		return nil, errors.New("-fresh cannot be combined with deprecated -journal migration")
 	}
-	if *taster && *manifest == "" && *manifestFile == "" {
-		return nil, errors.New("-taster requires -manifest or -manifest-file")
+	if *taster && *manifest == "" && *manifestFile == "" && *rdfFile == "" {
+		return nil, errors.New("-taster requires -manifest, -manifest-file, or -rdf-file")
 	}
 	if *taster && *dryRun {
 		return nil, errors.New("-taster and -dry-run are mutually exclusive; taster fetches one image")
 	}
 	if serve == 0 && acquireModes == 0 && !*doctor && !*ingestStatus && *exportMetadata == "" && *importMetadata == "" {
-		return nil, errors.New("one of -collection, -manifest, -manifest-file, -serve, -doctor, -ingest-status, -export-metadata, or -import-metadata is required")
+		return nil, errors.New("one of -collection, -manifest, -manifest-file, -rdf-file, -serve, -doctor, -ingest-status, -export-metadata, or -import-metadata is required")
 	}
 	o := &options{
 		collection:     *collection,
 		manifest:       *manifest,
 		manifestFile:   *manifestFile,
+		rdfFile:        *rdfFile,
+		imageFile:      *imageFile,
+		imageBase:      *imageBase,
 		langs:          splitCSV(*lang),
 		from:           *from,
 		to:             *to,
@@ -339,6 +353,10 @@ func run(args []string, stdoutW, stderrW io.Writer) int {
 
 	if o.servePort != 0 {
 		return runServe(ctx, o, out, errOut)
+	}
+
+	if o.rdfFile != "" {
+		return runRDF(ctx, o, out, errOut)
 	}
 
 	if o.manifest != "" || o.manifestFile != "" {
@@ -711,6 +729,123 @@ func runManifest(ctx context.Context, o *options, out, errOut *cliWriter) int {
 	}
 	out.printf("iiifpreserve: preserved %d image(s) and %d linked resource(s) to %s/%s (reused %d image(s), %d linked, repaired %d)\n",
 		sum.Stored, sum.LinkedStored, o.store, sum.Dir, sum.Skipped, sum.LinkedSkipped, sum.Repaired)
+	for _, warning := range sum.LinkedFailures {
+		errOut.line("iiifpreserve: WARNING linked resource:", warning)
+	}
+	if out.err != nil || errOut.err != nil {
+		return 1
+	}
+	return 0
+}
+
+type rdfAcquisitionFetcher struct {
+	inner        source.Fetcher
+	resources    map[string][]byte
+	manifestURL  string
+	manifestHash [32]byte
+	derivation   source.ManifestDerivation
+}
+
+func (f *rdfAcquisitionFetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
+	if body, ok := f.resources[rawURL]; ok {
+		return append([]byte(nil), body...), nil
+	}
+	return f.inner.Fetch(ctx, rawURL)
+}
+
+func (f *rdfAcquisitionFetcher) ManifestDerivation(manifestURL string, manifest []byte) (source.ManifestDerivation, bool) {
+	return f.derivation, manifestURL == f.manifestURL && sha256.Sum256(manifest) == f.manifestHash
+}
+
+// runRDF converts a local descriptive RDF document to a small Presentation 3
+// manifest, then hands that manifest to the same preservation path used for
+// native IIIF. RDF is acquired only from a local file (-rdf-file): institutions
+// serving descriptive RDF sit behind bot-walls (e.g. Cloudflare fingerprint
+// blocks) that a polite HTTP client cannot pass, so the document is downloaded
+// out of band (a browser) and fed in. Image acquisition still uses the
+// production fetcher's HTTPS and bot-wall safeguards.
+func runRDF(ctx context.Context, o *options, out, errOut *cliWriter) int {
+	baseFetcher, err := newCLIFetcher(o.store, errOut)
+	if err != nil {
+		errOut.line("iiifpreserve:", err)
+		return 1
+	}
+
+	rdfBytes, err := os.ReadFile(o.rdfFile)
+	if err != nil {
+		errOut.line("iiifpreserve: reading RDF file:", err)
+		return 1
+	}
+
+	var imageBytes []byte
+	var imageWidth, imageHeight int
+	if o.imageFile != "" {
+		imageBytes, err = os.ReadFile(o.imageFile)
+		if err != nil {
+			errOut.line("iiifpreserve: reading RDF image file:", err)
+			return 1
+		}
+		config, decodeErr := jpeg.DecodeConfig(bytes.NewReader(imageBytes))
+		if decodeErr != nil {
+			errOut.line("iiifpreserve: RDF image file is not a readable JPEG:", decodeErr)
+			return 1
+		}
+		imageWidth, imageHeight = config.Width, config.Height
+	}
+
+	rdfFormat, err := rdfingest.DetectFormat(rdfBytes, o.rdfFile)
+	if err != nil {
+		errOut.line("iiifpreserve: detecting RDF serialization:", err)
+		return 1
+	}
+	conversion, err := rdfingest.Convert(rdfBytes, rdfingest.Options{
+		Format: rdfFormat, SourceURL: "", ImageBaseURL: o.imageBase,
+		LocalSource: true, LocalImage: o.imageFile != "",
+		LocalImageWidth: imageWidth, LocalImageHeight: imageHeight,
+	})
+	if err != nil {
+		errOut.line("iiifpreserve: converting RDF:", err)
+		return 1
+	}
+
+	resources := map[string][]byte{conversion.SourceURL: rdfBytes}
+	if imageBytes != nil {
+		resources[conversion.ImageURL] = imageBytes
+	}
+	fetcher := &rdfAcquisitionFetcher{
+		inner: baseFetcher, resources: resources,
+		manifestURL: conversion.RecordURL, manifestHash: sha256.Sum256(conversion.Manifest),
+		derivation: source.ManifestDerivation{
+			Method: "rdf-to-iiif-v1", SourceURL: conversion.SourceURL, SourceSHA256: conversion.SourceSHA256,
+		},
+	}
+
+	if o.dryRun {
+		out.printf("iiifpreserve: %s — RDF primary image %dx%d (%s) (dry-run, not stored)\n",
+			conversion.RecordURL, conversion.ImageWidth, conversion.ImageHeight, conversion.ImageURL)
+		if out.err != nil {
+			return 1
+		}
+		return 0
+	}
+	if o.taster {
+		return runTaster(ctx, fetcher, conversion.RecordURL, conversion.Manifest, out, errOut)
+	}
+
+	progress := preserve.WithProgress(func(e preserve.ProgressEvent) {
+		errOut.printf("iiifpreserve: [%d/%d] %s %s\n", e.Index, e.Total, e.File, e.Action)
+	})
+	linkedProgress := preserve.WithLinkedProgress(func(e preserve.LinkedProgressEvent) {
+		errOut.printf("iiifpreserve: [linked %d] %s %s\n", e.Index, e.Action, e.URL)
+	})
+	sum, err := preserve.Preserve(ctx, fetcher, preserve.NewLocalBlobStore(o.store), conversion.RecordURL, conversion.Manifest,
+		progress, linkedProgress, preserve.WithPageRetries(o.pageRetries))
+	if err != nil {
+		errOut.line("iiifpreserve:", err)
+		return 1
+	}
+	out.printf("iiifpreserve: converted RDF and preserved %d image(s) and %d linked resource(s) to %s/%s\n",
+		sum.Stored, sum.LinkedStored, o.store, sum.Dir)
 	for _, warning := range sum.LinkedFailures {
 		errOut.line("iiifpreserve: WARNING linked resource:", warning)
 	}

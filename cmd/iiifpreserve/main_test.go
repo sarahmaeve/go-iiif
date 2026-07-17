@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -307,6 +308,39 @@ func TestParseArgs(t *testing.T) {
 			if _, err := parseArgs(args); err == nil {
 				t.Fatalf("parseArgs(%v) succeeded; want mutually-exclusive mode error", args)
 			}
+		}
+	})
+
+	t.Run("RDF acquisition flags are part of the main application", func(t *testing.T) {
+		o, err := parseArgs([]string{
+			"-rdf-file", "/tmp/work.rdf",
+			"-image-file", "/tmp/work.jpg",
+		})
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if o.rdfFile != "/tmp/work.rdf" || o.imageFile != "/tmp/work.jpg" {
+			t.Fatalf("RDF options = %+v", o)
+		}
+		for _, args := range [][]string{
+			{"-rdf-file", "work.rdf", "-manifest", "https://example.org/manifest"},
+			{"-rdf-file", "work.rdf", "-collection", "https://example.org/collection"},
+			{"-image-file", "work.jpg", "-manifest-file", "manifest.json"},
+			{"-image-base", "https://media.example/", "-serve"},
+		} {
+			if _, err := parseArgs(args); err == nil {
+				t.Fatalf("parseArgs(%v) succeeded; want RDF mode validation error", args)
+			}
+		}
+	})
+
+	t.Run("the network -rdf URL flag has been removed", func(t *testing.T) {
+		// RDF is now preserved only from a local document (-rdf-file); the
+		// bot-wall-prone URL-fetch path was removed. The flag must no longer
+		// parse, so a stale script fails loudly instead of silently changing
+		// meaning.
+		if _, err := parseArgs([]string{"-rdf", "https://example.org/work.rdf"}); err == nil {
+			t.Fatal("parseArgs(-rdf ...) succeeded; want unknown-flag error after removal")
 		}
 	})
 
@@ -675,6 +709,111 @@ func TestRunLocalManifestFileDryRun(t *testing.T) {
 	if !strings.Contains(stdout.String(), "https://example.org/iiif/local/manifest.json") ||
 		!strings.Contains(stdout.String(), "1 image(s)") {
 		t.Fatalf("stdout = %q, want manifest identity and image count", stdout.String())
+	}
+}
+
+func TestRunLocalRDFAndImageBuildsOrdinaryOfflineBundle(t *testing.T) {
+	tmp := t.TempDir()
+	rdfPath := filepath.Join(tmp, "work.rdf")
+	imagePath := filepath.Join(tmp, "work.jpg")
+	store := filepath.Join(tmp, "library")
+	rdf := []byte(`<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns:sioc="http://rdfs.org/sioc/ns#" xmlns:graph="https://example.org/graph/"
+ xmlns:cidoc="http://www.cidoc-crm.org/cidoc-crm#" xmlns:catalog="https://example.org/catalog/">
+ <sioc:Item rdf:about="https://museum.example/works/painting"><graph:has_docSem rdf:resource="https://data.example/object/painting"/></sioc:Item>
+ <cidoc:E22_Man-Made_Object rdf:about="https://data.example/object/painting">
+  <catalog:title xml:lang="en">Offline RDF Painting</catalog:title>
+  <catalog:main_image>images/original.jpg</catalog:main_image>
+  <cidoc:p65_shows_visual_item rdf:resource="https://data.example/image/painting"/>
+ </cidoc:E22_Man-Made_Object>
+ <cidoc:E36_Visual_Item rdf:about="https://data.example/image/painting">
+  <catalog:filePath>images/original.jpg</catalog:filePath><catalog:imageWidth>1944</catalog:imageWidth><catalog:imageHeight>2952</catalog:imageHeight>
+ </cidoc:E36_Visual_Item>
+</rdf:RDF>`)
+	if err := os.WriteFile(rdfPath, rdf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imageData := image.NewRGBA(image.Rect(0, 0, 64, 96))
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, imageData, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, encoded.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"-rdf-file", rdfPath,
+		"-image-file", imagePath,
+		"-store", store,
+	}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", exit, stdout.String(), stderr.String())
+	}
+	bundle := filepath.Join(store, "museum.example", "works_painting")
+	for _, name := range []string{"manifest.json", "provenance.json", "0001.jpg", filepath.Join("0001", "info.json")} {
+		if _, err := os.Stat(filepath.Join(bundle, name)); err != nil {
+			t.Errorf("bundle lacks %s: %v", name, err)
+		}
+	}
+	manifest, err := os.ReadFile(filepath.Join(bundle, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), "Offline RDF Painting") || !strings.Contains(string(manifest), `"width": 64`) {
+		t.Fatalf("derived manifest does not use RDF metadata and actual image dimensions: %s", manifest)
+	}
+	provenance, err := os.ReadFile(filepath.Join(bundle, "provenance.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prov struct {
+		ManifestDerivation struct {
+			Method       string `json:"method"`
+			SourceURL    string `json:"source_url"`
+			SourceSHA256 string `json:"source_sha256"`
+		} `json:"manifest_derivation"`
+		LinkedResources []struct {
+			URL  string `json:"url"`
+			File string `json:"file"`
+		} `json:"linked_resources"`
+	}
+	if err := json.Unmarshal(provenance, &prov); err != nil {
+		t.Fatal(err)
+	}
+	if prov.ManifestDerivation.Method != "rdf-to-iiif-v1" || prov.ManifestDerivation.SourceSHA256 == "" || len(prov.LinkedResources) != 1 {
+		t.Fatalf("RDF provenance = %+v", prov)
+	}
+	preservedRDF, err := os.ReadFile(filepath.Join(bundle, filepath.FromSlash(prov.LinkedResources[0].File)))
+	if err != nil || !bytes.Equal(preservedRDF, rdf) {
+		t.Fatalf("preserved RDF differs from source: %v", err)
+	}
+}
+
+func TestRunLocalRDFDetectsTurtleSerialization(t *testing.T) {
+	turtlePath := filepath.Join(t.TempDir(), "work.ttl")
+	turtle := []byte(`@prefix schema: <https://schema.org/> .
+<https://museum.example/works/turtle> a schema:VisualArtwork ;
+ schema:name "Turtle Painting"@en ;
+ schema:image <https://media.example/turtle.jpg> .
+<https://media.example/turtle.jpg> schema:width 640 ; schema:height 960 .`)
+	if err := os.WriteFile(turtlePath, turtle, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{
+		"-rdf-file", turtlePath,
+		"-dry-run",
+		"-store", t.TempDir(),
+	}, &stdout, &stderr)
+	if exit != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", exit, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "https://museum.example/works/turtle") || !strings.Contains(stdout.String(), "640x960") {
+		t.Fatalf("stdout = %q, want Turtle record and image dimensions", stdout.String())
 	}
 }
 

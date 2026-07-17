@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"image/jpeg"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/sarahmaeve/go-iiif/internal/source"
@@ -25,15 +27,7 @@ var imageSuffixes = []string{
 // preferred < 0 means no preference (default order).
 func imageURLCandidates(serviceID string, preferred int) []string {
 	base := strings.TrimRight(serviceID, "/")
-	order := make([]int, 0, len(imageSuffixes))
-	if preferred >= 0 && preferred < len(imageSuffixes) {
-		order = append(order, preferred)
-	}
-	for i := range imageSuffixes {
-		if i != preferred {
-			order = append(order, i)
-		}
-	}
+	order := imageSuffixOrder(base, preferred)
 	urls := make([]string, len(order))
 	for j, i := range order {
 		urls[j] = base + imageSuffixes[i]
@@ -50,15 +44,7 @@ func imageURLCandidates(serviceID string, preferred int) []string {
 func FetchImage(ctx context.Context, fetcher source.Fetcher, serviceID string, preferred int) (data []byte, usedURL string, variant int, err error) {
 	base := strings.TrimRight(serviceID, "/")
 
-	order := make([]int, 0, len(imageSuffixes))
-	if preferred >= 0 && preferred < len(imageSuffixes) {
-		order = append(order, preferred)
-	}
-	for i := range imageSuffixes {
-		if i != preferred {
-			order = append(order, i)
-		}
-	}
+	order := imageSuffixOrder(base, preferred)
 
 	var lastErr error
 	for _, i := range order {
@@ -79,4 +65,36 @@ func FetchImage(ctx context.Context, fetcher source.Fetcher, serviceID string, p
 		return body, url, i, nil
 	}
 	return nil, "", -1, fmt.Errorf("preserve: no image for %s: %w", serviceID, lastErr)
+}
+
+func imageSuffixOrder(serviceID string, preferred int) []int {
+	order := make([]int, 0, len(imageSuffixes))
+	if preferred >= 0 && preferred < len(imageSuffixes) {
+		order = append(order, preferred)
+	}
+	if preferred < 0 && staticJPEGURL(serviceID) {
+		order = append(order, len(imageSuffixes)-1)
+	}
+	for i := range imageSuffixes {
+		already := false
+		for _, selected := range order {
+			if selected == i {
+				already = true
+				break
+			}
+		}
+		if !already {
+			order = append(order, i)
+		}
+	}
+	return order
+}
+
+func staticJPEGURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	ext := strings.ToLower(path.Ext(u.Path))
+	return ext == ".jpg" || ext == ".jpeg"
 }

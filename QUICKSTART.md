@@ -89,6 +89,34 @@ Use `-manifest-file` when exact fidelity to a manually downloaded original
 manifest matters; the automatic fallback necessarily stores a derived
 Presentation 3 manifest because the challenged original was unavailable.
 
+### RDF record plus image (when no IIIF manifest exists)
+
+If an institution publishes descriptive RDF but no IIIF manifest, preserve a
+local RDF document and JPEG together:
+
+```sh
+iiifpreserve -rdf-file ./painting.rdf -image-file ./painting.jpg -dry-run
+iiifpreserve -rdf-file ./painting.rdf -image-file ./painting.jpg
+```
+
+`iiifpreserve` parses RDF/XML, Turtle, N-Triples, and JSON-LD itself, identifies
+the described record and common label, description, metadata, and image roles,
+and derives a one-canvas IIIF Presentation 3 manifest. The local JPEG's actual
+pixel dimensions supply the canvas geometry. The source RDF is copied byte for
+byte into the bundle as a checksummed linked resource, and provenance marks the
+manifest as derived; the normal image, tiling, serving, viewer, and doctor
+pipeline handles everything after conversion.
+
+RDF is read only from a local file (`-rdf-file`). Institutions that publish
+descriptive RDF typically sit behind bot-walls (e.g. Cloudflare fingerprint
+blocks) that a polite HTTP client cannot pass, so download the RDF document out
+of band — in a browser — and pass the saved file. If the RDF contains a relative
+image string, add `-image-base https://example.org/images/` so the referenced
+image is still fetched and preserved. A local `-image-file` also works when the
+RDF contains no digital-image facts at all. The current conversion selects one
+primary image; it does not attempt to turn every arbitrary RDF relationship into
+IIIF structure.
+
 ## 0. Prerequisites
 
 - **Go 1.26+** (`go version`)

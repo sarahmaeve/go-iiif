@@ -5,8 +5,9 @@
 A single Go binary that builds and serves an offline, viewer-ready copy of
 subsets of IIIF collections.
 
-It crawls a chosen institution politely (or takes a single `-manifest <url>`
-or already-downloaded `-manifest-file <path>`),
+It crawls a chosen institution politely (or takes a single `-manifest <url>`,
+an already-downloaded `-manifest-file <path>`, or descriptive RDF plus an
+image),
 filters by metadata, writes a complete on-disk copy (images + local IIIF
 level0 tile pyramids + manifest + provenance) into a persistent
 institution-nested library, serves it over HTTPS with the manifest rewritten
@@ -20,6 +21,12 @@ no external tools and the copy survives network outages.
 - Byte-faithful local-manifest ingestion via `-manifest-file <path>` when a
   browser can download a manifest that an institution will not serve to a
   programmatic client.
+- RDF/XML, Turtle, N-Triples, and JSON-LD ingestion from a local document via
+  `-rdf-file` (institutions serving descriptive RDF sit behind bot-walls, so the
+  document is downloaded out of band and fed in).
+  The built-in RDF graph converter derives a one-canvas Presentation 3
+  manifest, preserves the original RDF as a checksummed linked resource, and
+  can pair it with a browser-downloaded JPEG via `-image-file`.
 - Polite institution crawl with faceted `match`/`no-match` selection (e.g.
   French manuscripts, 15th c.) — built and live-tested at the classification
   layer; not yet dogfooded as a whole-library run.

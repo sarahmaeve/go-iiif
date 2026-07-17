@@ -43,6 +43,14 @@ func TestImageURLCandidates(t *testing.T) {
 			t.Fatalf("bare = %q", got[2])
 		}
 	})
+
+	t.Run("static image URL is tried directly before Image API variants", func(t *testing.T) {
+		const static = "https://media.example/painting.jpg"
+		got := imageURLCandidates(static, -1)
+		if got[0] != static {
+			t.Fatalf("first candidate = %q, want static resource %q", got[0], static)
+		}
+	})
 }
 
 // seqFetcher returns a programmed error/body per URL.

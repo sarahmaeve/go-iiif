@@ -43,7 +43,7 @@ Reference article: https://digitalorientalist.com/2026/05/12/running-iiif-locall
 | Subsetting | Local **metadata normalization** → typed `WorkRecord` → predicate filter, applied **before** image download | No global IIIF search exists; metadata is free-text/multilingual/per-institution |
 | Filter policy | **Two outcomes** `match` / `no-match`. A specified criterion only excludes when the metadata confidently fails it; when the field is absent the item is **kept** (lenient) | Preservation tool: losing a possibly-wanted manuscript is worse than an extra download. No reject/approve workflow |
 | Storage | **`BlobStore` interface**, `local` first; persistent root via `-store` > config file (`store=`) > `~/iiif-images` default; **nested by institution** `<root>/<host>/<slug>/` | Researcher's local drive as a long-lived library; interface keeps other backends possible later (no `aws-sdk-go`). Config is a tiny stdlib `key=value` parser (no YAML/TOML dep) |
-| Acquire modes | `-collection <url>` (crawl), `-manifest <url>` (single remote resource), or `-manifest-file <path>` (single already-downloaded manifest); both single-resource modes skip the filter | A single named manifest is an intentional choice. The file mode preserves its input bytes exactly, takes the manifest's top-level `id`/`@id` as bundle identity, and avoids a manifest request when an institution permits browser download but challenges programmatic access. `-dry-run` = classify/count only |
+| Acquire modes | `-collection <url>` (crawl), `-manifest <url>` / `-manifest-file <path>` (native IIIF), or `-rdf-file <path>` (derive IIIF from a local descriptive RDF document, optionally paired with `-image-file`) | Native IIIF remains byte-faithful and bypasses RDF conversion. RDF mode uses the project's own RDF/XML, Turtle, N-Triples, and JSON-LD graph parsers, synthesizes a one-canvas Presentation 3 manifest, and then enters the ordinary preservation pipeline. RDF is local-only: institutions serving descriptive RDF sit behind bot-walls (e.g. Cloudflare fingerprint blocks) a polite client cannot pass, so the document is downloaded out of band. `-dry-run` = classify/count only |
 | Per-item preservation | Per-canvas JPEG via the IIIF Image API at the **largest available size** (`/full/max` → `/full/full` → bare URL), plus the manifest and a provenance log | Grounded in the reference tool (`iiif-download`); a research preservation copy, not a commercial mirror |
 | Serving | **Built.** Static HTTPS file server over the BlobStore tree; `*/manifest.json` rewritten on the fly (serve-time, provenance-driven) so images resolve locally. Stored manifest stays pristine | Simplest correct; no config, no second file; loopback-only |
 | Embedded viewer | **Built.** Mirador 4 served at `/` (index of preserved manifests) and `/<dir>/` (viewer), bundle at `/__viewer__/mirador.min.js` | A researcher needs no external viewer; manifest passed via a data-attribute to dodge html/template JS-string `\/` escaping |
@@ -65,6 +65,13 @@ config(institutions)
     per-image tile pyramids + manifest.json + provenance (source URLs,
     recorded license, per-image tile_dir)
   [preservation ends here — content is fully saved and deep-zoomable]
+
+explicit RDF acquisition
+  → parse RDF/XML | Turtle | N-Triples | JSON-LD into a neutral graph
+  → identify record, language maps, selected metadata, and primary image
+    (or use a supplied local JPEG as the missing presentation layer)
+  → derive a one-canvas Presentation 3 manifest + source-RDF seeAlso
+  → enter the same image preservation, tiling, storage, and serving path above
 
 serve (built): static HTTPS server over BlobStore; */manifest.json
   rewritten at serve time so images resolve locally and re-point at the
@@ -171,9 +178,12 @@ marker used by the catalogue.
 The acquired `manifest.json` bytes are stored **unmodified and immutable**
 (fidelity/provenance); rewriting happens at serve time (§4.5), not on disk.
 For `-manifest-file` and ordinary remote manifests those are the original
-upstream bytes. The documented LOC fallback is the explicit exception: its
-acquired bytes are a derived Presentation 3 manifest linked to the official
-source item JSON with `seeAlso`.
+upstream bytes. Explicit derivation modes are the exceptions: the documented
+LOC fallback produces Presentation 3 linked to the official item JSON, while
+RDF acquisition produces Presentation 3 linked to the original RDF with
+`seeAlso`. The RDF bytes are preserved under `resources/`, their SHA-256 is
+recorded with `manifest_derivation`, and a local JPEG override is represented
+by a stable graph-derived image identity.
 
 A later preservation run is a non-destructive refresh. Existing JPEGs and
 tile pyramids are matched by their recorded image-service identity, so label,
@@ -333,6 +343,7 @@ checks are `-tags=integration` opt-in or the manual binary.
 | End-to-end classification pipeline | ✅ done | `internal/pipeline` |
 | Concurrent pipeline fan-out (opt-in `Workers`; per-host politeness preserved; live multi-host verified) | ✅ done | `internal/pipeline` |
 | CLI entrypoint | ✅ done (provisional name) | `cmd/iiifpreserve` |
+| Generic RDF acquisition: owned RDF/XML, Turtle, N-Triples, and JSON-LD parsers → vocabulary-neutral graph → one-canvas Presentation 3; optional local JPEG supplies missing image facts; source RDF retained with derivation provenance | ✅ done | `internal/rdfingest`, `cmd/iiifpreserve` |
 | Live validation vs. Gallica + Bodleian (manifests, recursive walk, full run, concurrent multi-host) | ✅ done | `*_test.go` `//go:build integration` |
 | `changestream` Source adapter (IIIF Change Discovery) | ✅ done | `internal/source` |
 | IIIF **v3** collections (`items`) + v2 mixed `members` | ✅ done | `internal/source` |
